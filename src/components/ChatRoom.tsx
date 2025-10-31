@@ -582,21 +582,33 @@ export default function ChatRoom() {
     setDeleting(true)
     try {
       const messageIds = Array.from(selectedMessages)
-      const { error } = await supabase
+      console.log('Deleting messages:', messageIds)
+      
+      const { data, error } = await supabase
         .from('messages')
         .delete()
         .in('id', messageIds)
+        .select()
 
-      if (error) throw error
+      if (error) {
+        console.error('Delete error:', error)
+        throw error
+      }
+
+      console.log('Delete result:', data)
 
       // Remove deleted messages from local state immediately
       setMessages((prev) => prev.filter(m => !messageIds.includes(m.id)))
       
       setSelectedMessages(new Set())
       setIsSelectionMode(false)
+      
+      // Reload messages to ensure consistency
+      await loadMessages()
     } catch (error) {
       console.error('Error deleting messages:', error)
-      alert('Ошибка при удалении сообщений: ' + (error as Error).message)
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      alert('Ошибка при удалении сообщений: ' + errorMessage)
     } finally {
       setDeleting(false)
     }
