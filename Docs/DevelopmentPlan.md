@@ -66,7 +66,11 @@
   
 - [*] 1.4. Настроить аутентификацию
   - [X] Включить Supabase Auth (включен по умолчанию)
-  - [ ] Настроить провайдер Google OAuth
+  - [*] Настроить провайдер Google OAuth
+    - [X] Создать OAuth клиент в Google Cloud Console
+    - [X] Получить Client ID и Client Secret
+    - [ ] Ввести credentials в Supabase Dashboard
+    - [ ] Протестировать вход через Google
   - [ ] Настроить провайдер Apple OAuth (опционально)
   - [X] Настроить политики безопасности (RLS - Row Level Security) - выполнено в миграции
   
