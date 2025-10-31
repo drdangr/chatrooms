@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import type { User } from '@supabase/supabase-js'
+import DBConnectionTest from './DBConnectionTest'
 
 export default function Auth() {
   const [user, setUser] = useState<User | null>(null)
@@ -53,25 +54,28 @@ export default function Auth() {
 
   if (user) {
     return (
-      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
-        <div className="bg-white p-8 rounded-lg shadow-md max-w-md w-full">
-          <h2 className="text-2xl font-bold mb-4">Добро пожаловать!</h2>
-          <div className="mb-4">
-            <p className="text-gray-700">
-              <strong>Email:</strong> {user.email}
-            </p>
-            {user.user_metadata?.name && (
+      <div className="min-h-screen bg-gray-100 py-8">
+        <div className="container mx-auto px-4 max-w-4xl">
+          <div className="bg-white p-8 rounded-lg shadow-md mb-6">
+            <h2 className="text-2xl font-bold mb-4">Добро пожаловать!</h2>
+            <div className="mb-4">
               <p className="text-gray-700">
-                <strong>Имя:</strong> {user.user_metadata.name}
+                <strong>Email:</strong> {user.email}
               </p>
-            )}
+              {user.user_metadata?.name && (
+                <p className="text-gray-700">
+                  <strong>Имя:</strong> {user.user_metadata.name}
+                </p>
+              )}
+            </div>
+            <button
+              onClick={handleSignOut}
+              className="w-full bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded transition-colors"
+            >
+              Выйти
+            </button>
           </div>
-          <button
-            onClick={handleSignOut}
-            className="w-full bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded transition-colors"
-          >
-            Выйти
-          </button>
+          <DBConnectionTest />
         </div>
       </div>
     )
