@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { callOpenAI } from '../lib/openai'
+import PromptSettings from './PromptSettings'
 
 interface Message {
   id: string
@@ -32,10 +33,25 @@ export default function ChatRoom() {
   const [sending, setSending] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [user, setUser] = useState<any>(null)
+  const [showSettings, setShowSettings] = useState(false)
 
   useEffect(() => {
     loadRoom()
     loadUser()
+
+    // Listen for room settings updates
+    const handleSettingsUpdate = (event: CustomEvent) => {
+      if (event.detail.roomId === roomId) {
+        console.log('Room settings updated, reloading room data...')
+        loadRoom()
+      }
+    }
+
+    window.addEventListener('roomSettingsUpdated', handleSettingsUpdate as EventListener)
+
+    return () => {
+      window.removeEventListener('roomSettingsUpdated', handleSettingsUpdate as EventListener)
+    }
   }, [roomId])
 
   useEffect(() => {
@@ -105,6 +121,14 @@ export default function ChatRoom() {
         .single()
 
       if (error) throw error
+      
+      console.log('📂 Loaded room:', {
+        id: data.id,
+        title: data.title,
+        system_prompt: data.system_prompt,
+        model: data.model,
+      })
+      
       setRoom(data)
     } catch (error) {
       console.error('Error loading room:', error)
@@ -153,6 +177,24 @@ export default function ChatRoom() {
 
       if (userMessageError) throw userMessageError
 
+      // Reload room data to ensure we have the latest settings
+      const { data: currentRoom, error: roomError } = await supabase
+        .from('rooms')
+        .select('*')
+        .eq('id', roomId)
+        .single()
+
+      if (roomError) {
+        console.error('Error loading room for LLM call:', roomError)
+        throw roomError
+      }
+
+      console.log('📋 Current room settings:', {
+        system_prompt: currentRoom?.system_prompt,
+        model: currentRoom?.model,
+        roomId,
+      })
+
       // Get recent messages for context (last 10 messages)
       const { data: recentMessages } = await supabase
         .from('messages')
@@ -167,14 +209,24 @@ export default function ChatRoom() {
         text: msg.text,
       }))
 
-      // Call LLM API
-      if (room) {
+      // Call LLM API with current room settings
+      if (currentRoom) {
         try {
+          const systemPrompt = currentRoom.system_prompt?.trim() || 'Вы - полезный ассистент.'
+          const model = currentRoom.model || 'gpt-4o-mini'
+          
+          console.log('🤖 Calling LLM with:', {
+            prompt: systemPrompt,
+            promptLength: systemPrompt.length,
+            model: model,
+            messagesCount: messagesForContext.length,
+          })
+          
           // Get LLM response
           const llmResponse = await callOpenAI(
-            room.system_prompt || 'Вы - полезный ассистент.',
+            systemPrompt,
             messagesForContext,
-            room.model || 'gpt-4o-mini'
+            model
           )
 
           // Save LLM response
@@ -201,6 +253,8 @@ export default function ChatRoom() {
             text: `Ошибка получения ответа от LLM: ${(llmError as Error).message}`,
           })
         }
+      } else {
+        console.error('Room not found for LLM call')
       }
     } catch (error) {
       console.error('Error sending message:', error)
@@ -244,16 +298,24 @@ export default function ChatRoom() {
         {/* Room Header */}
         <div className="bg-gray-50 border-b p-4">
           <div className="flex justify-between items-center">
-            <div>
+            <div className="flex-1">
               <h2 className="text-xl font-bold text-gray-800">{room.title}</h2>
               <p className="text-sm text-gray-500">Модель: {room.model}</p>
             </div>
-            <button
-              onClick={() => navigate('/')}
-              className="px-4 py-2 bg-gray-300 hover:bg-gray-400 text-gray-800 rounded-lg transition-colors text-sm font-semibold"
-            >
-              ← Назад
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowSettings(true)}
+                className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors text-sm font-semibold"
+              >
+                ⚙️ Настройки
+              </button>
+              <button
+                onClick={() => navigate('/rooms')}
+                className="px-4 py-2 bg-gray-300 hover:bg-gray-400 text-gray-800 rounded-lg transition-colors text-sm font-semibold"
+              >
+                ← Назад
+              </button>
+            </div>
           </div>
         </div>
 
@@ -336,6 +398,14 @@ export default function ChatRoom() {
           </form>
         </div>
       </div>
+
+      {/* Settings Modal */}
+      {showSettings && roomId && (
+        <PromptSettings
+          roomId={roomId}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
     </div>
   )
 }
