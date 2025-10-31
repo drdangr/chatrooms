@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
+import { callOpenAI } from '../lib/openai'
 
 interface Message {
   id: string
@@ -136,22 +137,76 @@ export default function ChatRoom() {
     if (!messageText.trim() || !roomId || !user) return
 
     setSending(true)
+    const userMessageText = messageText.trim()
+    setMessageText('') // Clear input immediately
+
     try {
-      const { error } = await supabase
+      // Save user message
+      const { error: userMessageError } = await supabase
         .from('messages')
         .insert({
           room_id: roomId,
           sender_id: user.id,
           sender_name: user.user_metadata?.name || user.email || 'Пользователь',
-          text: messageText.trim(),
+          text: userMessageText,
         })
 
-      if (error) throw error
+      if (userMessageError) throw userMessageError
 
-      setMessageText('')
+      // Get recent messages for context (last 10 messages)
+      const { data: recentMessages } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('room_id', roomId)
+        .order('timestamp', { ascending: false })
+        .limit(10)
+
+      // Reverse to get chronological order
+      const messagesForContext = (recentMessages || []).reverse().map((msg) => ({
+        sender_name: msg.sender_name,
+        text: msg.text,
+      }))
+
+      // Call LLM API
+      if (room) {
+        try {
+          // Get LLM response
+          const llmResponse = await callOpenAI(
+            room.system_prompt || 'Вы - полезный ассистент.',
+            messagesForContext,
+            room.model || 'gpt-4o-mini'
+          )
+
+          // Save LLM response
+          const { error: llmMessageError } = await supabase
+            .from('messages')
+            .insert({
+              room_id: roomId,
+              sender_id: null,
+              sender_name: 'LLM',
+              text: llmResponse,
+            })
+
+          if (llmMessageError) {
+            console.error('Error saving LLM response:', llmMessageError)
+            // Don't throw, just log - user message is already saved
+          }
+        } catch (llmError) {
+          console.error('Error calling LLM:', llmError)
+          // Save error message
+          await supabase.from('messages').insert({
+            room_id: roomId,
+            sender_id: null,
+            sender_name: 'Система',
+            text: `Ошибка получения ответа от LLM: ${(llmError as Error).message}`,
+          })
+        }
+      }
     } catch (error) {
       console.error('Error sending message:', error)
       alert('Ошибка при отправке сообщения: ' + (error as Error).message)
+      // Restore message text on error
+      setMessageText(userMessageText)
     } finally {
       setSending(false)
     }
@@ -209,37 +264,47 @@ export default function ChatRoom() {
               Пока нет сообщений. Начните общение!
             </div>
           ) : (
-            messages.map((message) => (
-              <div
-                key={message.id}
-                className={`flex ${message.sender_id === user?.id ? 'justify-end' : 'justify-start'}`}
-              >
+            messages.map((message) => {
+              const isUser = message.sender_id === user?.id
+              const isLLM = message.sender_name === 'LLM'
+              const isSystem = message.sender_name === 'Система'
+              
+              return (
                 <div
-                  className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
-                    message.sender_id === user?.id
-                      ? 'bg-blue-500 text-white'
-                      : 'bg-gray-200 text-gray-800'
-                  }`}
+                  key={message.id}
+                  className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}
                 >
-                  <div className="text-sm font-semibold mb-1">
-                    {message.sender_name}
-                  </div>
-                  <div className="text-sm">{message.text}</div>
                   <div
-                    className={`text-xs mt-1 ${
-                      message.sender_id === user?.id
-                        ? 'text-blue-100'
-                        : 'text-gray-500'
+                    className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
+                      isUser
+                        ? 'bg-blue-500 text-white'
+                        : isLLM
+                        ? 'bg-green-500 text-white'
+                        : isSystem
+                        ? 'bg-yellow-500 text-white'
+                        : 'bg-gray-200 text-gray-800'
                     }`}
                   >
-                    {new Date(message.timestamp).toLocaleTimeString('ru-RU', {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
+                    <div className="text-sm font-semibold mb-1">
+                      {message.sender_name}
+                    </div>
+                    <div className="text-sm">{message.text}</div>
+                    <div
+                      className={`text-xs mt-1 ${
+                        isUser || isLLM || isSystem
+                          ? 'text-opacity-75'
+                          : 'text-gray-500'
+                      }`}
+                    >
+                      {new Date(message.timestamp).toLocaleTimeString('ru-RU', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))
+              )
+            })
           )}
           <div ref={messagesEndRef} />
         </div>
