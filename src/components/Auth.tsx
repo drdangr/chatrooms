@@ -12,6 +12,10 @@ export default function Auth() {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
       setLoading(false)
+      // Auto-redirect to rooms if authenticated
+      if (session?.user && window.location.pathname === '/') {
+        window.location.href = '/rooms'
+      }
     })
 
     // Listen for changes on auth state
@@ -19,6 +23,10 @@ export default function Auth() {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null)
+      // Auto-redirect to rooms if authenticated
+      if (session?.user && window.location.pathname === '/') {
+        window.location.href = '/rooms'
+      }
     })
 
     return () => subscription.unsubscribe()
@@ -75,7 +83,19 @@ export default function Auth() {
               Выйти
             </button>
           </div>
-          <DBConnectionTest />
+          
+          <div className="mt-6">
+            <a
+              href="/rooms"
+              className="block w-full text-center px-6 py-3 bg-blue-500 hover:bg-blue-600 text-white font-semibold rounded-lg transition-colors"
+            >
+              Перейти к комнатам →
+            </a>
+          </div>
+
+          <div className="mt-6">
+            <DBConnectionTest />
+          </div>
         </div>
       </div>
     )
