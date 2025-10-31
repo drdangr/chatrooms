@@ -26,6 +26,7 @@ export default function ChatList() {
   const [currentUser, setCurrentUser] = useState<any>(null)
   const [roomRoles, setRoomRoles] = useState<Map<string, Role>>(new Map())
   const [roomCreators, setRoomCreators] = useState<Map<string, { id: string; name: string; email: string; avatarUrl: string | null }>>(new Map())
+  const [roomUsers, setRoomUsers] = useState<Map<string, Array<{ id: string; name: string; email: string; avatarUrl: string | null }>>>(new Map())
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -99,8 +100,52 @@ export default function ChatList() {
         setRoomRoles(rolesMap)
       }
 
-      // Load creator info for all rooms
+      // Load all users with roles for all rooms
       if (data && data.length > 0) {
+        const roomIds = data.map(r => r.id)
+        
+        // Get all roles for all rooms
+        const { data: allRoles, error: rolesError } = await supabase
+          .from('room_roles')
+          .select('room_id, user_id')
+          .in('room_id', roomIds)
+
+        if (!rolesError && allRoles) {
+          // Get unique user IDs from all roles
+          const userIds = [...new Set(allRoles.map(r => r.user_id))]
+          
+          // Load user details
+          const { data: users, error: usersError } = await supabase
+            .from('users')
+            .select('id, name, email, avatar_url')
+            .in('id', userIds)
+
+          if (!usersError && users) {
+            // Create map of user_id -> user details
+            const usersMap = new Map(users.map(u => [u.id, {
+              id: u.id,
+              name: u.name || u.email,
+              email: u.email,
+              avatarUrl: u.avatar_url
+            }]))
+
+            // Group users by room_id
+            const usersByRoom = new Map<string, Array<{ id: string; name: string; email: string; avatarUrl: string | null }>>()
+            allRoles.forEach(role => {
+              const user = usersMap.get(role.user_id)
+              if (user) {
+                if (!usersByRoom.has(role.room_id)) {
+                  usersByRoom.set(role.room_id, [])
+                }
+                usersByRoom.get(role.room_id)!.push(user)
+              }
+            })
+
+            setRoomUsers(usersByRoom)
+          }
+        }
+
+        // Also load creator info (for backwards compatibility and rooms without roles)
         const creatorIds = [...new Set(data.map(r => r.created_by))]
         const { data: creators, error: creatorsError } = await supabase
           .from('users')
@@ -323,12 +368,20 @@ export default function ChatList() {
                         className="flex-1 text-left hover:opacity-80 transition-opacity"
                         type="button"
                       >
-                        <div className="flex items-center gap-2 mb-1">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
                           <div className="font-semibold text-gray-800">{room.title}</div>
-                          {roomCreators.has(room.created_by) && (() => {
-                            const creator = roomCreators.get(room.created_by)!
-                            return <UserChip name={creator.name} email={creator.email} avatarUrl={creator.avatarUrl} size="sm" />
-                          })()}
+                          {roomUsers.has(room.id) && roomUsers.get(room.id)!.length > 0 ? (
+                            // Show all users with roles
+                            roomUsers.get(room.id)!.map(user => (
+                              <UserChip key={user.id} name={user.name} email={user.email} avatarUrl={user.avatarUrl} size="sm" />
+                            ))
+                          ) : roomCreators.has(room.created_by) ? (
+                            // Fallback to creator if no roles assigned yet
+                            (() => {
+                              const creator = roomCreators.get(room.created_by)!
+                              return <UserChip name={creator.name} email={creator.email} avatarUrl={creator.avatarUrl} size="sm" />
+                            })()
+                          ) : null}
                         </div>
                         <div className="text-sm text-gray-500 mt-1">
                           Создано: {new Date(room.created_at).toLocaleDateString('ru-RU')}
