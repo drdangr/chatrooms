@@ -44,35 +44,40 @@
 
 **Задачи:**
 
-- [ ] 1.1. Инициализировать React проект с TypeScript
-  - [ ] Настроить проект (Vite/Create React App)
-  - [ ] Установить зависимости (React, TypeScript, TailwindCSS)
-  - [ ] Настроить структуру папок проекта
+- [X] 1.1. Инициализировать React проект с TypeScript
+  - [X] Настроить проект (Vite/Create React App)
+  - [X] Установить зависимости (React, TypeScript, TailwindCSS)
+  - [X] Настроить структуру папок проекта
   
-- [ ] 1.2. Создать и настроить проект Supabase
-  - [ ] Зарегистрироваться/войти в Supabase
-  - [ ] Создать новый проект
-  - [ ] Сохранить credentials (URL, anon key, service key)
+- [X] 1.2. Создать и настроить проект Supabase
+  - [X] Зарегистрироваться/войти в Supabase
+  - [X] Создать новый проект
+  - [X] Сохранить credentials (URL, anon key, service key)
   
-- [ ] 1.3. Создать схему базы данных
-  - [ ] Создать таблицу `users` (id, email, name, avatar_url, created_at)
-  - [ ] Создать таблицу `rooms` (id, title, system_prompt, model, created_by, created_at)
-  - [ ] Создать таблицу `messages` (id, room_id, sender_id, sender_name, text, timestamp, created_at)
-  - [ ] Создать таблицу `files` (id, room_id, uploaded_by, filename, file_url, file_type, size, created_at)
-  - [ ] Настроить связи между таблицами (foreign keys)
-  - [ ] Настроить индексы для оптимизации запросов
+- [X] 1.3. Создать схему базы данных
+  - [X] Создать таблицу `users` (id, email, name, avatar_url, created_at)
+  - [X] Создать таблицу `rooms` (id, title, system_prompt, model, created_by, created_at)
+  - [X] Создать таблицу `messages` (id, room_id, sender_id, sender_name, text, timestamp, created_at)
+  - [X] Создать таблицу `files` (id, room_id, uploaded_by, filename, file_url, file_type, size, created_at)
+  - [X] Настроить связи между таблицами (foreign keys)
+  - [X] Настроить индексы для оптимизации запросов
+  - [X] Создать SQL миграцию в файле `supabase/migrations/001_initial_schema.sql`
+  - [X] Применить миграцию в Supabase Dashboard
   
-- [ ] 1.4. Настроить аутентификацию
-  - [ ] Включить Supabase Auth
+- [*] 1.4. Настроить аутентификацию
+  - [X] Включить Supabase Auth (включен по умолчанию)
   - [ ] Настроить провайдер Google OAuth
   - [ ] Настроить провайдер Apple OAuth (опционально)
-  - [ ] Настроить политики безопасности (RLS - Row Level Security)
+  - [X] Настроить политики безопасности (RLS - Row Level Security) - выполнено в миграции
   
-- [ ] 1.5. Установить и настроить Supabase клиент
-  - [ ] Установить @supabase/supabase-js
-  - [ ] Создать файл конфигурации с credentials
-  - [ ] Создать утилиту для инициализации клиента
-  - [ ] Протестировать подключение к БД
+- [X] 1.5. Установить и настроить Supabase клиент
+  - [X] Установить @supabase/supabase-js
+  - [X] Создать файл конфигурации с credentials
+  - [X] Создать утилиту для инициализации клиента
+  - [X] Создать компонент Auth для аутентификации
+  - [X] Создать компонент AuthCallback для обработки OAuth callback
+  - [X] Настроить роутинг (React Router)
+  - [ ] Протестировать подключение к БД (после настройки OAuth)
 
 ---
 
