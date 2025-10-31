@@ -25,7 +25,7 @@ export default function ChatList() {
   const [deletingRoomId, setDeletingRoomId] = useState<string | null>(null)
   const [currentUser, setCurrentUser] = useState<any>(null)
   const [roomRoles, setRoomRoles] = useState<Map<string, Role>>(new Map())
-  const [roomCreators, setRoomCreators] = useState<Map<string, { id: string; name: string; email: string }>>(new Map())
+  const [roomCreators, setRoomCreators] = useState<Map<string, { id: string; name: string; email: string; avatarUrl: string | null }>>(new Map())
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -104,16 +104,17 @@ export default function ChatList() {
         const creatorIds = [...new Set(data.map(r => r.created_by))]
         const { data: creators, error: creatorsError } = await supabase
           .from('users')
-          .select('id, name, email')
+          .select('id, name, email, avatar_url')
           .in('id', creatorIds)
 
         if (!creatorsError && creators) {
-          const creatorsMap = new Map<string, { id: string; name: string; email: string }>()
+          const creatorsMap = new Map<string, { id: string; name: string; email: string; avatarUrl: string | null }>()
           creators.forEach(creator => {
             creatorsMap.set(creator.id, {
               id: creator.id,
               name: creator.name || creator.email,
-              email: creator.email
+              email: creator.email,
+              avatarUrl: creator.avatar_url
             })
           })
           setRoomCreators(creatorsMap)
@@ -326,7 +327,7 @@ export default function ChatList() {
                           <div className="font-semibold text-gray-800">{room.title}</div>
                           {roomCreators.has(room.created_by) && (() => {
                             const creator = roomCreators.get(room.created_by)!
-                            return <UserChip name={creator.name} email={creator.email} size="sm" />
+                            return <UserChip name={creator.name} email={creator.email} avatarUrl={creator.avatarUrl} size="sm" />
                           })()}
                         </div>
                         <div className="text-sm text-gray-500 mt-1">

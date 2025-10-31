@@ -45,7 +45,7 @@ export default function ChatRoom() {
   const [isSelectionMode, setIsSelectionMode] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [userRole, setUserRole] = useState<Role | null>(null)
-  const [roomUsers, setRoomUsers] = useState<Array<{ id: string; name: string; email: string; role: Role }>>([])
+  const [roomUsers, setRoomUsers] = useState<Array<{ id: string; name: string; email: string; avatarUrl: string | null; role: Role }>>([])
 
   useEffect(() => {
     loadRoom()
@@ -289,7 +289,7 @@ export default function ChatRoom() {
       const userIds = rolesData.map(r => r.user_id)
       const { data: usersData, error: usersError } = await supabase
         .from('users')
-        .select('id, name, email')
+        .select('id, name, email, avatar_url')
         .in('id', userIds)
 
       if (usersError) {
@@ -307,10 +307,11 @@ export default function ChatRoom() {
             id: user.id,
             name: user.name || user.email,
             email: user.email,
+            avatarUrl: user.avatar_url,
             role: item.role as Role
           }
         })
-        .filter((u): u is { id: string; name: string; email: string; role: Role } => u !== null)
+        .filter((u): u is { id: string; name: string; email: string; avatarUrl: string | null; role: Role } => u !== null)
         .sort((a, b) => {
           // Sort by role: owner first, then admin, writer, viewer
           const roleOrder: Record<Role, number> = { owner: 0, admin: 1, writer: 2, viewer: 3 }
@@ -640,6 +641,7 @@ export default function ChatRoom() {
                         key={user.id}
                         name={user.name}
                         email={user.email}
+                        avatarUrl={user.avatarUrl}
                         size="sm"
                       />
                     ))}
