@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase'
 import { callOpenAI } from '../lib/openai'
 import PromptSettings from './PromptSettings'
 import { getUserRoleInRoom, permissions, Role } from '../lib/roles'
+import UserChip from './UserChip'
 
 interface Message {
   id: string
@@ -44,11 +45,13 @@ export default function ChatRoom() {
   const [isSelectionMode, setIsSelectionMode] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [userRole, setUserRole] = useState<Role | null>(null)
+  const [roomUsers, setRoomUsers] = useState<Array<{ id: string; name: string; email: string; role: Role }>>([])
 
   useEffect(() => {
     loadRoom()
     loadUser()
     loadUserRole()
+    loadRoomUsers()
 
     // Listen for room settings updates (local event from settings modal)
     const handleSettingsUpdate = (event: CustomEvent) => {
@@ -161,7 +164,7 @@ export default function ChatRoom() {
           }
         })
         
-      // Subscribe to room_roles changes to update user role
+      // Subscribe to room_roles changes to update user role and room users list
       const rolesChannel = supabase
         .channel(`room-roles:${roomId}`)
         .on(
@@ -177,6 +180,8 @@ export default function ChatRoom() {
             if (user?.id && (payload.new as any)?.user_id === user.id) {
               loadUserRole()
             }
+            // Reload room users list when roles change
+            loadRoomUsers()
           }
         )
         .subscribe()
@@ -198,6 +203,7 @@ export default function ChatRoom() {
     if (!roomId) return
 
     loadMessages()
+    loadRoomUsers()
     
     // Subscribe to messages
     const channel = supabase
@@ -257,6 +263,64 @@ export default function ChatRoom() {
     if (!roomId || !user?.id) return
     const role = await getUserRoleInRoom(roomId, user.id, supabase)
     setUserRole(role)
+  }
+
+  const loadRoomUsers = async () => {
+    if (!roomId) return
+
+    try {
+      // Get all roles in this room
+      const { data: rolesData, error: rolesError } = await supabase
+        .from('room_roles')
+        .select('user_id, role')
+        .eq('room_id', roomId)
+
+      if (rolesError) {
+        console.error('Error loading room roles:', rolesError)
+        return
+      }
+
+      if (!rolesData || rolesData.length === 0) {
+        setRoomUsers([])
+        return
+      }
+
+      // Get user details for all users with roles
+      const userIds = rolesData.map(r => r.user_id)
+      const { data: usersData, error: usersError } = await supabase
+        .from('users')
+        .select('id, name, email')
+        .in('id', userIds)
+
+      if (usersError) {
+        console.error('Error loading users:', usersError)
+        return
+      }
+
+      // Combine roles with user data
+      const usersMap = new Map(usersData?.map(u => [u.id, u]) || [])
+      const usersWithRoles = rolesData
+        .map(item => {
+          const user = usersMap.get(item.user_id)
+          if (!user) return null
+          return {
+            id: user.id,
+            name: user.name || user.email,
+            email: user.email,
+            role: item.role as Role
+          }
+        })
+        .filter((u): u is { id: string; name: string; email: string; role: Role } => u !== null)
+        .sort((a, b) => {
+          // Sort by role: owner first, then admin, writer, viewer
+          const roleOrder: Record<Role, number> = { owner: 0, admin: 1, writer: 2, viewer: 3 }
+          return roleOrder[a.role] - roleOrder[b.role]
+        })
+
+      setRoomUsers(usersWithRoles)
+    } catch (error) {
+      console.error('Error loading room users:', error)
+    }
   }
 
   const loadRoom = async () => {
@@ -568,7 +632,19 @@ export default function ChatRoom() {
             <div className="flex justify-between items-center">
               <div className="flex-1">
                 <h2 className="text-xl font-bold text-gray-800">{room.title}</h2>
-                <p className="text-sm text-gray-500">Модель: {room.model}</p>
+                <p className="text-sm text-gray-500 mb-2">Модель: {room.model}</p>
+                {roomUsers.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {roomUsers.map((user) => (
+                      <UserChip
+                        key={user.id}
+                        name={user.name}
+                        email={user.email}
+                        size="sm"
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="flex gap-2">
                 {isSelectionMode ? (

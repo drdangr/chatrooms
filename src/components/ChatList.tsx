@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { getUserRoleInRoom, permissions, Role } from '../lib/roles'
+import UserChip from './UserChip'
 
 interface Room {
   id: string
@@ -24,6 +25,7 @@ export default function ChatList() {
   const [deletingRoomId, setDeletingRoomId] = useState<string | null>(null)
   const [currentUser, setCurrentUser] = useState<any>(null)
   const [roomRoles, setRoomRoles] = useState<Map<string, Role>>(new Map())
+  const [roomCreators, setRoomCreators] = useState<Map<string, { id: string; name: string; email: string }>>(new Map())
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -95,6 +97,27 @@ export default function ChatList() {
           }
         }
         setRoomRoles(rolesMap)
+      }
+
+      // Load creator info for all rooms
+      if (data && data.length > 0) {
+        const creatorIds = [...new Set(data.map(r => r.created_by))]
+        const { data: creators, error: creatorsError } = await supabase
+          .from('users')
+          .select('id, name, email')
+          .in('id', creatorIds)
+
+        if (!creatorsError && creators) {
+          const creatorsMap = new Map<string, { id: string; name: string; email: string }>()
+          creators.forEach(creator => {
+            creatorsMap.set(creator.id, {
+              id: creator.id,
+              name: creator.name || creator.email,
+              email: creator.email
+            })
+          })
+          setRoomCreators(creatorsMap)
+        }
       }
     } catch (error) {
       console.error('Error loading rooms:', error)
@@ -177,12 +200,19 @@ export default function ChatList() {
 
     setDeletingRoomId(roomId)
     try {
-      const { error } = await supabase
+      console.log('Attempting to delete room:', roomId, 'with role:', userRole)
+      const { data, error } = await supabase
         .from('rooms')
         .delete()
         .eq('id', roomId)
+        .select()
 
-      if (error) throw error
+      if (error) {
+        console.error('Delete error:', error)
+        throw error
+      }
+
+      console.log('Delete successful, deleted rows:', data)
 
       // Navigate away if we're in this room
       if (window.location.pathname.includes(roomId)) {
@@ -192,7 +222,8 @@ export default function ChatList() {
       loadRooms()
     } catch (error) {
       console.error('Error deleting room:', error)
-      alert('Ошибка при удалении комнаты: ' + (error as Error).message)
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      alert('Ошибка при удалении комнаты: ' + errorMessage)
     } finally {
       setDeletingRoomId(null)
     }
@@ -291,7 +322,13 @@ export default function ChatList() {
                         className="flex-1 text-left hover:opacity-80 transition-opacity"
                         type="button"
                       >
-                        <div className="font-semibold text-gray-800">{room.title}</div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <div className="font-semibold text-gray-800">{room.title}</div>
+                          {roomCreators.has(room.created_by) && (() => {
+                            const creator = roomCreators.get(room.created_by)!
+                            return <UserChip name={creator.name} email={creator.email} size="sm" />
+                          })()}
+                        </div>
                         <div className="text-sm text-gray-500 mt-1">
                           Создано: {new Date(room.created_at).toLocaleDateString('ru-RU')}
                         </div>
