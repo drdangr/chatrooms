@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
-import { Role, RoomRole, getUserRoleInRoom, canAssignRole, permissions } from '../lib/roles'
+import { Role, getUserRoleInRoom, canAssignRole, permissions } from '../lib/roles'
 
 interface RoleManagementProps {
   roomId: string

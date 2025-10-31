@@ -143,7 +143,7 @@ export default function ChatList() {
   const handleSaveEditRoom = async () => {
     if (!editingRoomId || !editingRoomTitle.trim()) return
 
-    const userRole = roomRoles.get(editingRoomId)
+    const userRole = roomRoles.get(editingRoomId) ?? null
     if (!permissions.canRenameRoom(userRole)) {
       alert('У вас нет прав для переименования этой комнаты')
       return
@@ -167,7 +167,7 @@ export default function ChatList() {
   }
 
   const handleDeleteRoom = async (roomId: string) => {
-    const userRole = roomRoles.get(roomId)
+    const userRole = roomRoles.get(roomId) ?? null
     if (!permissions.canDeleteRoom(userRole)) {
       alert('У вас нет прав для удаления этой комнаты')
       return
@@ -240,7 +240,7 @@ export default function ChatList() {
             </div>
           ) : (
             filteredRooms.map((room) => {
-              const userRole = roomRoles.get(room.id)
+              const userRole = roomRoles.get(room.id) ?? null
               const isEditing = editingRoomId === room.id
               const canEdit = permissions.canRenameRoom(userRole)
               const canDelete = permissions.canDeleteRoom(userRole)
