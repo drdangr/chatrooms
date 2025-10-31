@@ -26,7 +26,7 @@ export default function ChatList() {
   const [currentUser, setCurrentUser] = useState<any>(null)
   const [roomRoles, setRoomRoles] = useState<Map<string, Role>>(new Map())
   const [roomCreators, setRoomCreators] = useState<Map<string, { id: string; name: string; email: string; avatarUrl: string | null }>>(new Map())
-  const [roomUsers, setRoomUsers] = useState<Map<string, Array<{ id: string; name: string; email: string; avatarUrl: string | null }>>>(new Map())
+  const [roomUsers, setRoomUsers] = useState<Map<string, Array<{ id: string; name: string; email: string; avatarUrl: string | null; role: Role }>>>(new Map())
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -107,7 +107,7 @@ export default function ChatList() {
         // Get all roles for all rooms
         const { data: allRoles, error: rolesError } = await supabase
           .from('room_roles')
-          .select('room_id, user_id')
+          .select('room_id, user_id, role')
           .in('room_id', roomIds)
 
         if (!rolesError && allRoles) {
@@ -129,15 +129,18 @@ export default function ChatList() {
               avatarUrl: u.avatar_url
             }]))
 
-            // Group users by room_id
-            const usersByRoom = new Map<string, Array<{ id: string; name: string; email: string; avatarUrl: string | null }>>()
-            allRoles.forEach(role => {
-              const user = usersMap.get(role.user_id)
+            // Group users by room_id with roles
+            const usersByRoom = new Map<string, Array<{ id: string; name: string; email: string; avatarUrl: string | null; role: Role }>>()
+            allRoles.forEach(roleItem => {
+              const user = usersMap.get(roleItem.user_id)
               if (user) {
-                if (!usersByRoom.has(role.room_id)) {
-                  usersByRoom.set(role.room_id, [])
+                if (!usersByRoom.has(roleItem.room_id)) {
+                  usersByRoom.set(roleItem.room_id, [])
                 }
-                usersByRoom.get(role.room_id)!.push(user)
+                usersByRoom.get(roleItem.room_id)!.push({
+                  ...user,
+                  role: roleItem.role as Role
+                })
               }
             })
 
@@ -373,13 +376,13 @@ export default function ChatList() {
                           {roomUsers.has(room.id) && roomUsers.get(room.id)!.length > 0 ? (
                             // Show all users with roles
                             roomUsers.get(room.id)!.map(user => (
-                              <UserChip key={user.id} name={user.name} email={user.email} avatarUrl={user.avatarUrl} size="sm" />
+                              <UserChip key={user.id} name={user.name} email={user.email} avatarUrl={user.avatarUrl} role={user.role} size="sm" />
                             ))
                           ) : roomCreators.has(room.created_by) ? (
-                            // Fallback to creator if no roles assigned yet
+                            // Fallback to creator if no roles assigned yet (assume owner role)
                             (() => {
                               const creator = roomCreators.get(room.created_by)!
-                              return <UserChip name={creator.name} email={creator.email} avatarUrl={creator.avatarUrl} size="sm" />
+                              return <UserChip name={creator.name} email={creator.email} avatarUrl={creator.avatarUrl} role="owner" size="sm" />
                             })()
                           ) : null}
                         </div>

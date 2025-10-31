@@ -642,6 +642,7 @@ export default function ChatRoom() {
                         name={user.name}
                         email={user.email}
                         avatarUrl={user.avatarUrl}
+                        role={user.role}
                         size="sm"
                       />
                     ))}

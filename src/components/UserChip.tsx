@@ -1,14 +1,16 @@
 import { useState } from 'react'
+import { Role } from '../lib/roles'
 
 interface UserChipProps {
   name: string
   email: string
   avatarUrl?: string | null
+  role?: Role | null
   size?: 'sm' | 'md'
   showEmail?: boolean
 }
 
-export default function UserChip({ name, email, avatarUrl, size = 'md', showEmail = false }: UserChipProps) {
+export default function UserChip({ name, email, avatarUrl, role, size = 'md', showEmail = false }: UserChipProps) {
   const [imageError, setImageError] = useState(false)
 
   // Get initials from name or email
@@ -23,9 +25,22 @@ export default function UserChip({ name, email, avatarUrl, size = 'md', showEmai
     return email[0].toUpperCase()
   }
 
+  // Get role icon
+  const getRoleIcon = (role: Role | null | undefined): string => {
+    if (!role) return ''
+    switch (role) {
+      case 'viewer': return '👁️'
+      case 'writer': return '✍️'
+      case 'admin': return '⚙️'
+      case 'owner': return '👑'
+      default: return ''
+    }
+  }
+
   const initials = getInitials(name, email)
   const displayName = name || email
   const avatarSize = size === 'sm' ? 'w-5 h-5' : 'w-6 h-6'
+  const roleIcon = getRoleIcon(role)
 
   const sizeClasses = size === 'sm' 
     ? 'px-2 py-1 text-xs'
@@ -50,6 +65,11 @@ export default function UserChip({ name, email, avatarUrl, size = 'md', showEmai
       <span className="font-medium truncate max-w-[120px]">
         {displayName}
       </span>
+      {roleIcon && (
+        <span className={`flex items-center justify-center ${avatarSize} text-base leading-none`} title={role || ''}>
+          {roleIcon}
+        </span>
+      )}
       {showEmail && email !== name && (
         <span className="text-blue-600 opacity-75 text-xs truncate max-w-[100px]">
           ({email})
