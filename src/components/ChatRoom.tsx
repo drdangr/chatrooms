@@ -35,16 +35,52 @@ export default function ChatRoom() {
   useEffect(() => {
     loadRoom()
     loadUser()
-
-    return () => {
-      // Cleanup subscriptions
-    }
   }, [roomId])
 
   useEffect(() => {
-    if (roomId) {
-      loadMessages()
-      subscribeToMessages()
+    if (!roomId) return
+
+    loadMessages()
+    
+    // Subscribe to messages
+    const channel = supabase
+      .channel(`messages:${roomId}`, {
+        config: {
+          broadcast: { self: true },
+        },
+      })
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+          filter: `room_id=eq.${roomId}`,
+        },
+        (payload) => {
+          console.log('New message received:', payload)
+          setMessages((prev) => {
+            // Check if message already exists to avoid duplicates
+            const exists = prev.some((msg) => msg.id === payload.new.id)
+            if (exists) return prev
+            return [...prev, payload.new as Message]
+          })
+        }
+      )
+      .subscribe((status) => {
+        console.log('Subscription status:', status)
+        if (status === 'SUBSCRIBED') {
+          console.log('Successfully subscribed to messages')
+        }
+        if (status === 'CHANNEL_ERROR') {
+          console.error('Channel error - Realtime may not be enabled')
+        }
+      })
+
+    // Cleanup subscription on unmount or room change
+    return () => {
+      console.log('Unsubscribing from messages channel')
+      supabase.removeChannel(channel)
     }
   }, [roomId])
 
@@ -95,29 +131,6 @@ export default function ChatRoom() {
     }
   }
 
-  const subscribeToMessages = () => {
-    if (!roomId) return
-
-    const channel = supabase
-      .channel(`messages:${roomId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'messages',
-          filter: `room_id=eq.${roomId}`,
-        },
-        (payload) => {
-          setMessages((prev) => [...prev, payload.new as Message])
-        }
-      )
-      .subscribe()
-
-    return () => {
-      supabase.removeChannel(channel)
-    }
-  }
 
   const handleSendMessage = async () => {
     if (!messageText.trim() || !roomId || !user) return

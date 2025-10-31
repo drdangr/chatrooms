@@ -25,7 +25,11 @@ export default function ChatList() {
 
     // Subscribe to changes in rooms table
     const channel = supabase
-      .channel('rooms-changes')
+      .channel('rooms-changes', {
+        config: {
+          broadcast: { self: true },
+        },
+      })
       .on(
         'postgres_changes',
         {
@@ -33,13 +37,23 @@ export default function ChatList() {
           schema: 'public',
           table: 'rooms',
         },
-        () => {
+        (payload) => {
+          console.log('Rooms change detected:', payload)
           loadRooms()
         }
       )
-      .subscribe()
+      .subscribe((status) => {
+        console.log('Rooms subscription status:', status)
+        if (status === 'SUBSCRIBED') {
+          console.log('Successfully subscribed to rooms changes')
+        }
+        if (status === 'CHANNEL_ERROR') {
+          console.error('Channel error - Realtime may not be enabled for rooms table')
+        }
+      })
 
     return () => {
+      console.log('Unsubscribing from rooms channel')
       supabase.removeChannel(channel)
     }
   }, [])
