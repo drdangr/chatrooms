@@ -48,34 +48,147 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
 
     setSaving(true)
     try {
-      const { error } = await supabase
-        .from('rooms')
-        .update({
-          system_prompt: systemPrompt.trim(),
-          model: selectedModel,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', roomId)
+      // Get current user to verify permissions
+      const { data: { user }, error: userError } = await supabase.auth.getUser()
+      if (userError || !user) {
+        throw new Error('User not authenticated')
+      }
 
-      if (error) throw error
+      console.log('💾 Attempting to save settings:', {
+        roomId,
+        userId: user.id,
+        systemPrompt: systemPrompt.trim(),
+        model: selectedModel,
+      })
+
+      // First, check if user can update this room
+      const { data: existingRoom, error: checkError } = await supabase
+        .from('rooms')
+        .select('id, created_by, system_prompt, model')
+        .eq('id', roomId)
+        .single()
+
+      if (checkError) {
+        throw new Error(`Cannot access room: ${checkError.message}`)
+      }
+
+      console.log('📋 Current room data:', existingRoom)
+      console.log('👤 Current user ID:', user.id)
+      console.log('🏠 Room created by:', existingRoom.created_by)
+      console.log('🔐 Can update?', existingRoom.created_by === user.id)
+
+      if (existingRoom.created_by !== user.id) {
+        // Check if RLS policy allows update for all authenticated users
+        console.log('⚠️ User did not create room, but will try to update (RLS may allow)')
+      }
+
+      // Perform the update with explicit error handling
+      const updateData = {
+        system_prompt: systemPrompt.trim(),
+        model: selectedModel,
+        updated_at: new Date().toISOString(),
+      }
+
+      console.log('📝 Executing UPDATE with data:', updateData)
+
+      const { data: updateResult, error } = await supabase
+        .from('rooms')
+        .update(updateData)
+        .eq('id', roomId)
+        .select() // Return updated row
+
+      if (error) {
+        console.error('❌ Update error:', error)
+        console.error('❌ Error code:', error.code)
+        console.error('❌ Error message:', error.message)
+        console.error('❌ Error details:', JSON.stringify(error, null, 2))
+        console.error('❌ Error hint:', error.hint)
+        
+        if (error.code === 'PGRST301' || error.message?.includes('permission') || error.message?.includes('policy')) {
+          console.error('❌ RLS POLICY ERROR: User may not have permission to update this room')
+          throw new Error(`Нет прав на обновление комнаты. Вы должны быть создателем комнаты. Ошибка: ${error.message}`)
+        }
+        
+        throw error
+      }
+
+      if (!updateResult || updateResult.length === 0) {
+        console.error('❌ Update returned no rows - update may have been blocked by RLS')
+        throw new Error('Обновление не выполнено. Проверьте права доступа к комнате.')
+      }
+
+      console.log('✅ Update result:', updateResult)
+      console.log('✅ Update result prompt:', updateResult[0]?.system_prompt)
+      console.log('✅ Expected prompt:', systemPrompt.trim())
+      console.log('✅ Match?', updateResult[0]?.system_prompt === systemPrompt.trim())
 
       console.log('✅ Settings saved successfully:', {
         roomId,
         systemPrompt: systemPrompt.trim(),
         model: selectedModel,
+        timestamp: new Date().toISOString(),
+        updateResult: updateResult?.[0],
       })
 
       // Verify the save by reading back
-      const { data: savedRoom } = await supabase
+      const { data: savedRoom, error: verifyError } = await supabase
+        .from('rooms')
+        .select('system_prompt, model, updated_at, created_by')
+        .eq('id', roomId)
+        .single()
+
+      if (verifyError) {
+        console.error('❌ Error verifying saved settings:', verifyError)
+      } else {
+        console.log('✅ Verified saved settings in DB:', savedRoom)
+        console.log('🔍 Comparison:', {
+          saved: savedRoom.system_prompt,
+          expected: systemPrompt.trim(),
+          match: savedRoom.system_prompt === systemPrompt.trim(),
+        })
+        
+        if (savedRoom.system_prompt !== systemPrompt.trim()) {
+          console.error('❌ MISMATCH! Saved prompt does not match what we tried to save!')
+          console.error('❌ Expected:', systemPrompt.trim())
+          console.error('❌ Got:', savedRoom.system_prompt)
+        } else {
+          console.log('✅ Verified: Saved prompt matches expected value')
+        }
+        
+        console.log('✅ This should trigger Realtime UPDATE event for other clients')
+      }
+
+      // CRITICAL: Verify one more time before closing
+      const { data: finalCheck } = await supabase
         .from('rooms')
         .select('system_prompt, model')
         .eq('id', roomId)
         .single()
 
-      console.log('✅ Verified saved settings:', savedRoom)
+      console.log('🔍 Final verification before closing:', {
+        expected: systemPrompt.trim(),
+        actual: finalCheck?.system_prompt,
+        matches: finalCheck?.system_prompt === systemPrompt.trim(),
+      })
 
-      // Trigger custom event to notify ChatRoom about the update
+      if (finalCheck?.system_prompt !== systemPrompt.trim()) {
+        console.error('❌ CRITICAL: Prompt mismatch detected before closing modal!')
+        console.error('❌ This suggests the update was rolled back or overwritten')
+        alert(`Ошибка: промпт не сохранился! Ожидалось: "${systemPrompt.trim()}", получено: "${finalCheck?.system_prompt}"`)
+        setSaving(false)
+        return
+      }
+
+      // Wait a bit to ensure DB transaction is committed and Realtime event is propagated
+      // Longer delay to ensure Realtime has time to broadcast to all clients
+      console.log('⏳ Waiting 1.5 seconds for Realtime propagation...')
+      await new Promise(resolve => setTimeout(resolve, 1500))
+
+      // Trigger custom event to notify ChatRoom about the update (local)
+      // But only if we're sure the save was successful
       window.dispatchEvent(new CustomEvent('roomSettingsUpdated', { detail: { roomId } }))
+      
+      console.log('📤 Settings saved and local event triggered. Realtime event should be broadcast to other clients now.')
       
       alert('Настройки сохранены!')
       onClose()

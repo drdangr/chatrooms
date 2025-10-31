@@ -21,6 +21,7 @@ interface Room {
   model: string
   created_by: string
   created_at: string
+  updated_at?: string
 }
 
 export default function ChatRoom() {
@@ -39,15 +40,123 @@ export default function ChatRoom() {
     loadRoom()
     loadUser()
 
-    // Listen for room settings updates
+    // Listen for room settings updates (local event from settings modal)
     const handleSettingsUpdate = (event: CustomEvent) => {
       if (event.detail.roomId === roomId) {
-        console.log('Room settings updated, reloading room data...')
-        loadRoom()
+        console.log('⚡ Room settings updated (local event), reloading room data...')
+        console.log('⚡ Current room state before reload:', room?.system_prompt)
+        // Longer delay to ensure DB write and Realtime propagation is complete
+        setTimeout(() => {
+          console.log('⚡ Loading room data after local update...')
+          loadRoom()
+        }, 1500) // Increased delay to avoid race condition
       }
     }
 
     window.addEventListener('roomSettingsUpdated', handleSettingsUpdate as EventListener)
+
+    // Subscribe to room changes via Realtime (for changes from other users)
+    if (roomId) {
+      console.log('🔌 Setting up Realtime subscription for room:', roomId)
+      console.log('🔌 Channel name: room-updates:' + roomId)
+      
+      const roomChannel = supabase
+        .channel(`room-updates:${roomId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'rooms',
+            filter: `id=eq.${roomId}`,
+          },
+          (payload) => {
+            console.log('📢 ===== ROOM UPDATED VIA REALTIME =====')
+            console.log('📢 Full payload:', JSON.stringify(payload, null, 2))
+            console.log('📢 Event type:', payload.eventType)
+            console.log('📢 Table:', payload.table)
+            console.log('📢 Schema:', payload.schema)
+            console.log('📢 New settings:', payload.new)
+            console.log('📢 Old settings:', payload.old)
+            console.log('📢 Timestamp:', new Date().toISOString())
+            
+            // Check if this is actually a meaningful update
+            if (!payload.new) {
+              console.warn('⚠️ Realtime payload.new is missing')
+              return
+            }
+            
+            // Check timestamp to avoid overwriting newer updates
+            const payloadTime = payload.new.updated_at ? new Date(payload.new.updated_at).getTime() : 0
+            const currentTime = room?.updated_at ? new Date(room.updated_at).getTime() : 0
+
+            if (payloadTime < currentTime && currentTime > 0) {
+              console.warn('⚠️ Ignoring older Realtime update:', {
+                payloadTime: payload.new.updated_at,
+                currentTime: room?.updated_at,
+              })
+              return // Don't overwrite with older data
+            }
+
+            // Immediately update room state with new data
+            setRoom((prevRoom) => {
+              if (!prevRoom) {
+                console.warn('⚠️ Previous room state is null, reloading...')
+                loadRoom()
+                return prevRoom
+              }
+              
+              const updated: Room = {
+                ...prevRoom,
+                system_prompt: payload.new.system_prompt ?? prevRoom.system_prompt,
+                model: payload.new.model ?? prevRoom.model,
+                updated_at: payload.new.updated_at,
+              }
+              
+              console.log('✅ Room state updated from Realtime:', {
+                oldPrompt: prevRoom.system_prompt,
+                newPrompt: updated.system_prompt,
+                oldModel: prevRoom.model,
+                newModel: updated.model,
+                promptChanged: prevRoom.system_prompt !== updated.system_prompt,
+                modelChanged: prevRoom.model !== updated.model,
+                timestamp: payload.new.updated_at,
+              })
+              
+              return updated
+            })
+            
+            // Also reload from DB to be sure we have all fields
+            setTimeout(() => {
+              console.log('🔄 Reloading room data from DB to verify...')
+              loadRoom()
+            }, 300)
+          }
+        )
+        .subscribe((status, err) => {
+          console.log('📡 Room updates subscription status:', status, 'for room:', roomId)
+          if (status === 'SUBSCRIBED') {
+            console.log('✅ Successfully subscribed to room updates for room:', roomId)
+            console.log('✅ This client will now receive UPDATE events from other users')
+          }
+          if (status === 'CHANNEL_ERROR') {
+            console.error('❌ Channel error - Realtime may not be enabled for rooms table:', err)
+            console.error('💡 Check: ALTER TABLE rooms REPLICA IDENTITY FULL;')
+          }
+          if (status === 'TIMED_OUT') {
+            console.error('❌ Subscription timed out - Realtime connection issue')
+          }
+          if (status === 'CLOSED') {
+            console.log('⚠️ Subscription closed')
+          }
+        })
+
+      return () => {
+        window.removeEventListener('roomSettingsUpdated', handleSettingsUpdate as EventListener)
+        console.log('Unsubscribing from room updates channel')
+        supabase.removeChannel(roomChannel)
+      }
+    }
 
     return () => {
       window.removeEventListener('roomSettingsUpdated', handleSettingsUpdate as EventListener)
@@ -127,7 +236,19 @@ export default function ChatRoom() {
         title: data.title,
         system_prompt: data.system_prompt,
         model: data.model,
+        updated_at: data.updated_at,
+        timestamp: new Date().toISOString(),
       })
+      
+      // Check if this is overwriting a newer value
+      if (room && room.system_prompt && data.system_prompt !== room.system_prompt) {
+        console.log('⚠️ Room data changed during load:', {
+          previous: room.system_prompt,
+          new: data.system_prompt,
+          previousUpdated: room.updated_at,
+          newUpdated: data.updated_at,
+        })
+      }
       
       setRoom(data)
     } catch (error) {
@@ -296,25 +417,44 @@ export default function ChatRoom() {
     <div className="max-w-4xl mx-auto">
       <div className="bg-white rounded-lg shadow-md overflow-hidden flex flex-col" style={{ height: 'calc(100vh - 200px)' }}>
         {/* Room Header */}
-        <div className="bg-gray-50 border-b p-4">
-          <div className="flex justify-between items-center">
-            <div className="flex-1">
-              <h2 className="text-xl font-bold text-gray-800">{room.title}</h2>
-              <p className="text-sm text-gray-500">Модель: {room.model}</p>
+        <div className="bg-gray-50 border-b">
+          <div className="p-4">
+            <div className="flex justify-between items-center">
+              <div className="flex-1">
+                <h2 className="text-xl font-bold text-gray-800">{room.title}</h2>
+                <p className="text-sm text-gray-500">Модель: {room.model}</p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowSettings(true)}
+                  className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors text-sm font-semibold"
+                >
+                  ⚙️ Настройки
+                </button>
+                <button
+                  onClick={() => navigate('/rooms')}
+                  className="px-4 py-2 bg-gray-300 hover:bg-gray-400 text-gray-800 rounded-lg transition-colors text-sm font-semibold"
+                >
+                  ← Назад
+                </button>
+              </div>
             </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setShowSettings(true)}
-                className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors text-sm font-semibold"
-              >
-                ⚙️ Настройки
-              </button>
-              <button
-                onClick={() => navigate('/rooms')}
-                className="px-4 py-2 bg-gray-300 hover:bg-gray-400 text-gray-800 rounded-lg transition-colors text-sm font-semibold"
-              >
-                ← Назад
-              </button>
+          </div>
+          
+          {/* System Prompt Display */}
+          <div className="px-4 pb-3 border-t border-gray-200 pt-3 bg-blue-50">
+            <div className="flex items-start gap-2">
+              <div className="flex-shrink-0 mt-0.5">
+                <span className="text-lg">🤖</span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-semibold text-blue-700 mb-1">Системный промпт LLM:</div>
+                <div className="text-sm text-blue-900 bg-white p-2 rounded border border-blue-200 font-mono whitespace-pre-wrap break-words">
+                  {room.system_prompt?.trim() || (
+                    <span className="text-gray-400 italic">Вы - полезный ассистент.</span>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </div>
