@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
+import RoleManagement from './RoleManagement'
 
 interface PromptSettingsProps {
   roomId: string
@@ -18,10 +19,18 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
   const [selectedModel, setSelectedModel] = useState('gpt-4o-mini')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [activeTab, setActiveTab] = useState<'settings' | 'roles'>('settings')
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
 
   useEffect(() => {
     loadRoom()
+    loadCurrentUser()
   }, [roomId])
+
+  const loadCurrentUser = async () => {
+    const { data: { user } } = await supabase.auth.getUser()
+    setCurrentUserId(user?.id || null)
+  }
 
   const loadRoom = async () => {
     try {
@@ -214,6 +223,31 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
       <div className="bg-white rounded-lg p-6 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
         <h3 className="text-2xl font-bold mb-4">Настройки комнаты</h3>
 
+        {/* Tabs */}
+        <div className="flex border-b mb-4">
+          <button
+            onClick={() => setActiveTab('settings')}
+            className={`px-4 py-2 font-semibold transition-colors ${
+              activeTab === 'settings'
+                ? 'border-b-2 border-blue-500 text-blue-600'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            Настройки
+          </button>
+          <button
+            onClick={() => setActiveTab('roles')}
+            className={`px-4 py-2 font-semibold transition-colors ${
+              activeTab === 'roles'
+                ? 'border-b-2 border-blue-500 text-blue-600'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            Роли
+          </button>
+        </div>
+
+        {activeTab === 'settings' ? (
         <div className="space-y-6">
           {/* Model Selection */}
           <div>
@@ -281,24 +315,44 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
             </div>
           </div>
         </div>
+        ) : (
+          currentUserId ? (
+            <RoleManagement roomId={roomId} currentUserId={currentUserId} />
+          ) : (
+            <div className="text-center py-4 text-gray-500">Загрузка...</div>
+          )
+        )}
 
         {/* Actions */}
-        <div className="flex gap-3 mt-6">
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="flex-1 px-6 py-3 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed font-semibold"
-          >
-            {saving ? 'Сохранение...' : 'Сохранить'}
-          </button>
-          <button
-            onClick={onClose}
-            disabled={saving}
-            className="flex-1 px-6 py-3 bg-gray-300 hover:bg-gray-400 text-gray-800 rounded-lg transition-colors disabled:bg-gray-200 font-semibold"
-          >
-            Отмена
-          </button>
-        </div>
+        {activeTab === 'settings' && (
+          <div className="flex gap-3 mt-6">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="flex-1 px-6 py-3 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed font-semibold"
+            >
+              {saving ? 'Сохранение...' : 'Сохранить'}
+            </button>
+            <button
+              onClick={onClose}
+              disabled={saving}
+              className="flex-1 px-6 py-3 bg-gray-300 hover:bg-gray-400 text-gray-800 rounded-lg transition-colors disabled:bg-gray-200 font-semibold"
+            >
+              Отмена
+            </button>
+          </div>
+        )}
+        
+        {activeTab === 'roles' && (
+          <div className="flex gap-3 mt-6">
+            <button
+              onClick={onClose}
+              className="flex-1 px-6 py-3 bg-gray-300 hover:bg-gray-400 text-gray-800 rounded-lg transition-colors font-semibold"
+            >
+              Закрыть
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

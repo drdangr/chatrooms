@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { callOpenAI } from '../lib/openai'
 import PromptSettings from './PromptSettings'
+import { getUserRoleInRoom, permissions, Role } from '../lib/roles'
 
 interface Message {
   id: string
@@ -39,10 +40,15 @@ export default function ChatRoom() {
   const [isEditingSystemPrompt, setIsEditingSystemPrompt] = useState(false)
   const [editingPromptValue, setEditingPromptValue] = useState('')
   const [savingPrompt, setSavingPrompt] = useState(false)
+  const [selectedMessages, setSelectedMessages] = useState<Set<string>>(new Set())
+  const [isSelectionMode, setIsSelectionMode] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [userRole, setUserRole] = useState<Role | null>(null)
 
   useEffect(() => {
     loadRoom()
     loadUser()
+    loadUserRole()
 
     // Listen for room settings updates (local event from settings modal)
     const handleSettingsUpdate = (event: CustomEvent) => {
@@ -137,7 +143,7 @@ export default function ChatRoom() {
             }, 300)
           }
         )
-        .subscribe((status, err) => {
+            .subscribe((status, err) => {
           console.log('📡 Room updates subscription status:', status, 'for room:', roomId)
           if (status === 'SUBSCRIBED') {
             console.log('✅ Successfully subscribed to room updates for room:', roomId)
@@ -154,18 +160,39 @@ export default function ChatRoom() {
             console.log('⚠️ Subscription closed')
           }
         })
+        
+      // Subscribe to room_roles changes to update user role
+      const rolesChannel = supabase
+        .channel(`room-roles:${roomId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'room_roles',
+            filter: `room_id=eq.${roomId}`,
+          },
+          (payload) => {
+            console.log('📢 Room role changed:', payload)
+            if (user?.id && (payload.new as any)?.user_id === user.id) {
+              loadUserRole()
+            }
+          }
+        )
+        .subscribe()
 
       return () => {
         window.removeEventListener('roomSettingsUpdated', handleSettingsUpdate as EventListener)
         console.log('Unsubscribing from room updates channel')
         supabase.removeChannel(roomChannel)
+        supabase.removeChannel(rolesChannel)
       }
     }
 
     return () => {
       window.removeEventListener('roomSettingsUpdated', handleSettingsUpdate as EventListener)
     }
-  }, [roomId])
+  }, [roomId, user?.id])
 
   useEffect(() => {
     if (!roomId) return
@@ -221,6 +248,15 @@ export default function ChatRoom() {
   const loadUser = async () => {
     const { data: { user } } = await supabase.auth.getUser()
     setUser(user)
+    if (user && roomId) {
+      await loadUserRole()
+    }
+  }
+
+  const loadUserRole = async () => {
+    if (!roomId || !user?.id) return
+    const role = await getUserRoleInRoom(roomId, user.id, supabase)
+    setUserRole(role)
   }
 
   const loadRoom = async () => {
@@ -284,6 +320,11 @@ export default function ChatRoom() {
 
   const handleSendMessage = async () => {
     if (!messageText.trim() || !roomId || !user) return
+
+    if (!permissions.canSendMessages(userRole)) {
+      alert('У вас нет прав для отправки сообщений в этой комнате')
+      return
+    }
 
     setSending(true)
     const userMessageText = messageText.trim()
@@ -396,6 +437,10 @@ export default function ChatRoom() {
   }
 
   const handleStartEditPrompt = () => {
+    if (!permissions.canEditPrompt(userRole)) {
+      alert('У вас нет прав для редактирования системного промпта')
+      return
+    }
     setEditingPromptValue(room?.system_prompt || '')
     setIsEditingSystemPrompt(true)
     setShowSystemPrompt(true) // Ensure it's visible when editing
@@ -426,6 +471,9 @@ export default function ChatRoom() {
       setRoom((prev) => prev ? { ...prev, system_prompt: editingPromptValue.trim(), updated_at: data.updated_at } : null)
       setIsEditingSystemPrompt(false)
       
+      // Reload user role in case it changed
+      await loadUserRole()
+      
       // Trigger event for local update
       window.dispatchEvent(new CustomEvent('roomSettingsUpdated', { detail: { roomId } }))
     } catch (error) {
@@ -433,6 +481,59 @@ export default function ChatRoom() {
       alert('Ошибка при сохранении промпта: ' + (error as Error).message)
     } finally {
       setSavingPrompt(false)
+    }
+  }
+
+  const handleToggleMessageSelection = (messageId: string) => {
+    setSelectedMessages((prev) => {
+      const newSet = new Set(prev)
+      if (newSet.has(messageId)) {
+        newSet.delete(messageId)
+      } else {
+        newSet.add(messageId)
+      }
+      return newSet
+    })
+  }
+
+  const handleSelectAll = () => {
+    if (selectedMessages.size === messages.length) {
+      setSelectedMessages(new Set())
+    } else {
+      setSelectedMessages(new Set(messages.map(m => m.id)))
+    }
+  }
+
+  const handleDeleteSelected = async () => {
+    if (selectedMessages.size === 0) return
+
+    if (!permissions.canDeleteMessages(userRole)) {
+      alert('У вас нет прав для удаления сообщений')
+      return
+    }
+
+    if (!confirm(`Удалить ${selectedMessages.size} сообщение(ий)?`)) return
+
+    setDeleting(true)
+    try {
+      const messageIds = Array.from(selectedMessages)
+      const { error } = await supabase
+        .from('messages')
+        .delete()
+        .in('id', messageIds)
+
+      if (error) throw error
+
+      // Remove deleted messages from local state immediately
+      setMessages((prev) => prev.filter(m => !messageIds.includes(m.id)))
+      
+      setSelectedMessages(new Set())
+      setIsSelectionMode(false)
+    } catch (error) {
+      console.error('Error deleting messages:', error)
+      alert('Ошибка при удалении сообщений: ' + (error as Error).message)
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -470,18 +571,55 @@ export default function ChatRoom() {
                 <p className="text-sm text-gray-500">Модель: {room.model}</p>
               </div>
               <div className="flex gap-2">
-                <button
-                  onClick={() => setShowSettings(true)}
-                  className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors text-sm font-semibold"
-                >
-                  ⚙️ Настройки
-                </button>
-                <button
-                  onClick={() => navigate('/rooms')}
-                  className="px-4 py-2 bg-gray-300 hover:bg-gray-400 text-gray-800 rounded-lg transition-colors text-sm font-semibold"
-                >
-                  ← Назад
-                </button>
+                {isSelectionMode ? (
+                  <>
+                    <button
+                      onClick={handleSelectAll}
+                      className="px-4 py-2 bg-gray-500 hover:bg-gray-600 text-white rounded-lg transition-colors text-sm font-semibold"
+                    >
+                      {selectedMessages.size === messages.length ? 'Снять все' : 'Выделить все'}
+                    </button>
+                    <button
+                      onClick={handleDeleteSelected}
+                      disabled={selectedMessages.size === 0 || deleting}
+                      className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors text-sm font-semibold disabled:bg-gray-400 disabled:cursor-not-allowed"
+                    >
+                      {deleting ? 'Удаление...' : `Удалить (${selectedMessages.size})`}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsSelectionMode(false)
+                        setSelectedMessages(new Set())
+                      }}
+                      className="px-4 py-2 bg-gray-300 hover:bg-gray-400 text-gray-800 rounded-lg transition-colors text-sm font-semibold"
+                    >
+                      Отменить
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {permissions.canDeleteMessages(userRole) && (
+                      <button
+                        onClick={() => setIsSelectionMode(true)}
+                        className="px-4 py-2 bg-gray-500 hover:bg-gray-600 text-white rounded-lg transition-colors text-sm font-semibold"
+                      >
+                        Выделить
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setShowSettings(true)}
+                      className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors text-sm font-semibold"
+                    >
+                      ⚙️ Настройки
+                    </button>
+                    <button
+                      onClick={() => navigate('/rooms')}
+                      className="px-4 py-2 bg-gray-300 hover:bg-gray-400 text-gray-800 rounded-lg transition-colors text-sm font-semibold"
+                    >
+                      ← Назад
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -502,7 +640,7 @@ export default function ChatRoom() {
                   <div className="text-xs font-semibold text-blue-700">
                     Системный промпт LLM:
                   </div>
-                  {showSystemPrompt && !isEditingSystemPrompt && (
+                  {showSystemPrompt && !isEditingSystemPrompt && permissions.canEditPrompt(userRole) && (
                     <button
                       onClick={handleStartEditPrompt}
                       className="text-xs text-blue-600 hover:text-blue-800 underline"
@@ -573,12 +711,21 @@ export default function ChatRoom() {
               const isUser = message.sender_id === user?.id
               const isLLM = message.sender_name === 'LLM'
               const isSystem = message.sender_name === 'Система'
+              const isSelected = selectedMessages.has(message.id)
               
               return (
                 <div
                   key={message.id}
-                  className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}
+                  className={`flex items-start gap-2 ${isUser ? 'justify-end' : 'justify-start'}`}
                 >
+                  {isSelectionMode && (
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => handleToggleMessageSelection(message.id)}
+                      className="mt-2 w-5 h-5 cursor-pointer"
+                    />
+                  )}
                   <div
                     className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
                       isUser
@@ -588,7 +735,7 @@ export default function ChatRoom() {
                         : isSystem
                         ? 'bg-yellow-500 text-white'
                         : 'bg-gray-200 text-gray-800'
-                    }`}
+                    } ${isSelected ? 'ring-2 ring-red-500 ring-offset-2' : ''}`}
                   >
                     <div className="text-sm font-semibold mb-1">
                       {message.sender_name}
@@ -627,13 +774,13 @@ export default function ChatRoom() {
               type="text"
               value={messageText}
               onChange={(e) => setMessageText(e.target.value)}
-              placeholder="Введите сообщение..."
+              placeholder={permissions.canSendMessages(userRole) ? "Введите сообщение..." : "У вас нет прав для отправки сообщений"}
               className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              disabled={sending}
+              disabled={sending || !permissions.canSendMessages(userRole)}
             />
             <button
               type="submit"
-              disabled={sending || !messageText.trim()}
+              disabled={sending || !messageText.trim() || !permissions.canSendMessages(userRole)}
               className="px-6 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed font-semibold"
             >
               {sending ? 'Отправка...' : 'Отправить'}
