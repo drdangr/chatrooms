@@ -37,7 +37,7 @@ export default function ChatRoom() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [user, setUser] = useState<any>(null)
   const [showSettings, setShowSettings] = useState(false)
-  const [showSystemPrompt, setShowSystemPrompt] = useState(true)
+  const [showSystemPrompt, setShowSystemPrompt] = useState(false)
   const [isEditingSystemPrompt, setIsEditingSystemPrompt] = useState(false)
   const [editingPromptValue, setEditingPromptValue] = useState('')
   const [savingPrompt, setSavingPrompt] = useState(false)
