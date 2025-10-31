@@ -190,7 +190,6 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
       
       console.log('📤 Settings saved and local event triggered. Realtime event should be broadcast to other clients now.')
       
-      alert('Настройки сохранены!')
       onClose()
     } catch (error) {
       console.error('Error saving settings:', error)

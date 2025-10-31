@@ -35,6 +35,10 @@ export default function ChatRoom() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [user, setUser] = useState<any>(null)
   const [showSettings, setShowSettings] = useState(false)
+  const [showSystemPrompt, setShowSystemPrompt] = useState(true)
+  const [isEditingSystemPrompt, setIsEditingSystemPrompt] = useState(false)
+  const [editingPromptValue, setEditingPromptValue] = useState('')
+  const [savingPrompt, setSavingPrompt] = useState(false)
 
   useEffect(() => {
     loadRoom()
@@ -391,6 +395,47 @@ export default function ChatRoom() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
 
+  const handleStartEditPrompt = () => {
+    setEditingPromptValue(room?.system_prompt || '')
+    setIsEditingSystemPrompt(true)
+    setShowSystemPrompt(true) // Ensure it's visible when editing
+  }
+
+  const handleCancelEditPrompt = () => {
+    setIsEditingSystemPrompt(false)
+    setEditingPromptValue('')
+  }
+
+  const handleSavePrompt = async () => {
+    if (!roomId || !editingPromptValue.trim()) return
+
+    setSavingPrompt(true)
+    try {
+      const { data, error } = await supabase
+        .from('rooms')
+        .update({
+          system_prompt: editingPromptValue.trim(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', roomId)
+        .select()
+        .single()
+
+      if (error) throw error
+
+      setRoom((prev) => prev ? { ...prev, system_prompt: editingPromptValue.trim(), updated_at: data.updated_at } : null)
+      setIsEditingSystemPrompt(false)
+      
+      // Trigger event for local update
+      window.dispatchEvent(new CustomEvent('roomSettingsUpdated', { detail: { roomId } }))
+    } catch (error) {
+      console.error('Error saving prompt:', error)
+      alert('Ошибка при сохранении промпта: ' + (error as Error).message)
+    } finally {
+      setSavingPrompt(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -444,16 +489,74 @@ export default function ChatRoom() {
           {/* System Prompt Display */}
           <div className="px-4 pb-3 border-t border-gray-200 pt-3 bg-blue-50">
             <div className="flex items-start gap-2">
-              <div className="flex-shrink-0 mt-0.5">
-                <span className="text-lg">🤖</span>
-              </div>
+              <button
+                onClick={() => setShowSystemPrompt(!showSystemPrompt)}
+                className="flex-shrink-0 mt-0.5 hover:bg-blue-100 rounded p-1 -m-1 transition-colors"
+              >
+                <span className={`inline-block transition-transform duration-200 ${showSystemPrompt ? 'rotate-90' : ''}`}>
+                  ▶
+                </span>
+              </button>
               <div className="flex-1 min-w-0">
-                <div className="text-xs font-semibold text-blue-700 mb-1">Системный промпт LLM:</div>
-                <div className="text-sm text-blue-900 bg-white p-2 rounded border border-blue-200 font-mono whitespace-pre-wrap break-words">
-                  {room.system_prompt?.trim() || (
-                    <span className="text-gray-400 italic">Вы - полезный ассистент.</span>
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-xs font-semibold text-blue-700">
+                    Системный промпт LLM:
+                  </div>
+                  {showSystemPrompt && !isEditingSystemPrompt && (
+                    <button
+                      onClick={handleStartEditPrompt}
+                      className="text-xs text-blue-600 hover:text-blue-800 underline"
+                    >
+                      Редактировать
+                    </button>
                   )}
                 </div>
+                {showSystemPrompt && (
+                  <div className="relative">
+                    {isEditingSystemPrompt ? (
+                      <div className="space-y-2">
+                        <textarea
+                          value={editingPromptValue}
+                          onChange={(e) => setEditingPromptValue(e.target.value)}
+                          className="w-full text-sm text-blue-900 bg-white p-2 rounded border-2 border-blue-400 font-mono whitespace-pre-wrap break-words min-h-[80px] focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="Вы - полезный ассистент."
+                          autoFocus
+                          disabled={savingPrompt}
+                        />
+                        <div className="flex gap-2 justify-end">
+                          <button
+                            onClick={handleSavePrompt}
+                            disabled={savingPrompt}
+                            className="p-1.5 bg-green-500 hover:bg-green-600 text-white rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Сохранить"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={handleCancelEditPrompt}
+                            disabled={savingPrompt}
+                            className="p-1.5 bg-red-500 hover:bg-red-600 text-white rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Отменить"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div 
+                        className="text-sm text-blue-900 bg-white p-2 rounded border border-blue-200 font-mono whitespace-pre-wrap break-words"
+                      >
+                        {room.system_prompt?.trim() || (
+                          <span className="text-gray-400 italic">Вы - полезный ассистент.</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           </div>
