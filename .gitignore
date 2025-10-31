@@ -31,3 +31,4 @@ dist-ssr
 # OAuth credentials (contains sensitive data)
 supabase/GOOGLE_OAUTH_CREDENTIALS.md
 
+.vercel

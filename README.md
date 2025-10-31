@@ -54,6 +54,21 @@ chatrooms/
 └── package.json
 ```
 
+## Деплой
+
+См. подробную инструкцию по деплою на Vercel в `VERCEL_DEPLOY.md`
+
+### Быстрый старт деплоя
+
+1. Зайдите на [vercel.com](https://vercel.com) и подключите репозиторий
+2. Добавьте переменные окружения:
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
+   - `VITE_OPENAI_API_KEY`
+3. Нажмите "Deploy"
+
+**Важно:** После деплоя настройте OAuth Redirect URLs в Supabase Dashboard, добавив домен Vercel.
+
 ## Разработка
 
 См. подробный план разработки в `Docs/DevelopmentPlan.md`
