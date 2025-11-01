@@ -28,6 +28,12 @@ npm install
 - `VITE_SUPABASE_URL` - URL вашего Supabase проекта
 - `VITE_SUPABASE_ANON_KEY` - Anon key из Supabase Dashboard
 - `VITE_OPENAI_API_KEY` - API ключ OpenAI
+- `VITE_OPENAI_EMBEDDING_MODEL` - Модель для эмбеддингов (опционально, по умолчанию: `text-embedding-3-small`)
+- `VITE_OPENAI_EMBEDDING_DIMENSIONS` - Размерность эмбеддингов (опционально, используется для уменьшения размерности)
+
+**Для русскоязычного контента рекомендуется:**
+- `VITE_OPENAI_EMBEDDING_MODEL` = `text-embedding-3-large`
+- `VITE_OPENAI_EMBEDDING_DIMENSIONS` = `1024`
 
 **Как добавить:**
 1. В настройках проекта Vercel перейдите в "Environment Variables"
@@ -81,7 +87,13 @@ vercel --prod
 vercel env add VITE_SUPABASE_URL
 vercel env add VITE_SUPABASE_ANON_KEY
 vercel env add VITE_OPENAI_API_KEY
+vercel env add VITE_OPENAI_EMBEDDING_MODEL
+vercel env add VITE_OPENAI_EMBEDDING_DIMENSIONS
 ```
+
+**Важно:** После добавления переменных окружения **обязательно пересоберите проект**:
+1. Через Dashboard: Settings → Environment Variables → Redeploy
+2. Через CLI: сделайте новый commit и push, или используйте `vercel --prod`
 
 ## Проверка после деплоя
 
