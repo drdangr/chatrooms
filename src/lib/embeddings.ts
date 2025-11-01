@@ -12,6 +12,16 @@ const EMBEDDING_DIMENSIONS = import.meta.env.VITE_OPENAI_EMBEDDING_DIMENSIONS
   ? parseInt(import.meta.env.VITE_OPENAI_EMBEDDING_DIMENSIONS) 
   : undefined // Use model default
 
+// Log configuration on module load (only once)
+if (typeof window !== 'undefined') {
+  console.log('🔧 Embedding configuration:', {
+    model: OPENAI_EMBEDDING_MODEL,
+    dimensions: EMBEDDING_DIMENSIONS || 'default',
+    envModel: import.meta.env.VITE_OPENAI_EMBEDDING_MODEL || 'not set',
+    envDimensions: import.meta.env.VITE_OPENAI_EMBEDDING_DIMENSIONS || 'not set'
+  })
+}
+
 interface EmbeddingResponse {
   data: Array<{
     embedding: number[]
@@ -49,7 +59,16 @@ export async function generateEmbedding(text: string): Promise<number[]> {
   }
 
   const data: EmbeddingResponse = await response.json()
-  return data.data[0].embedding
+  const embedding = data.data[0].embedding
+  
+  // Verify embedding dimensions match expected
+  if (EMBEDDING_DIMENSIONS && embedding.length !== EMBEDDING_DIMENSIONS) {
+    console.warn(`⚠️ Warning: Expected ${EMBEDDING_DIMENSIONS} dimensions, got ${embedding.length}`)
+  }
+  
+  console.log(`✅ Generated embedding: ${embedding.length} dimensions (model: ${OPENAI_EMBEDDING_MODEL})`)
+  
+  return embedding
 }
 
 /**
@@ -83,6 +102,17 @@ export async function generateEmbeddingsBatch(texts: string[]): Promise<number[]
 
   const data: EmbeddingResponse = await response.json()
   // Sort by index to ensure order matches input
-  return data.data.sort((a, b) => a.index - b.index).map(item => item.embedding)
+  const embeddings = data.data.sort((a, b) => a.index - b.index).map(item => item.embedding)
+  
+  // Verify embedding dimensions match expected
+  if (EMBEDDING_DIMENSIONS && embeddings.length > 0 && embeddings[0].length !== EMBEDDING_DIMENSIONS) {
+    console.warn(`⚠️ Warning: Expected ${EMBEDDING_DIMENSIONS} dimensions, got ${embeddings[0].length}`)
+  }
+  
+  if (embeddings.length > 0) {
+    console.log(`✅ Generated ${embeddings.length} embeddings: ${embeddings[0].length} dimensions each (model: ${OPENAI_EMBEDDING_MODEL})`)
+  }
+  
+  return embeddings
 }
 

@@ -114,7 +114,7 @@ export async function generateAndStoreEmbedding(
       // Note: This should not fail if pgvector is properly configured
       // If it does fail, check:
       // 1. Is pgvector extension enabled?
-      // 2. Is the embedding column type correct (vector(1536))?
+      // 2. Is the embedding column type correct (check DB schema)?
     } else {
       console.log('✅ Embedding stored successfully for message:', messageId.substring(0, 8))
       
