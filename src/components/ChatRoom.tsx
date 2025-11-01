@@ -478,7 +478,7 @@ export default function ChatRoom() {
           )
 
           // Save LLM response
-          const { error: llmMessageError } = await supabase
+          const { data: llmMessage, error: llmMessageError } = await supabase
             .from('messages')
             .insert({
               room_id: roomId,
@@ -486,20 +486,42 @@ export default function ChatRoom() {
               sender_name: 'LLM',
               text: llmResponse,
             })
+            .select()
+            .single()
 
           if (llmMessageError) {
             console.error('Error saving LLM response:', llmMessageError)
             // Don't throw, just log - user message is already saved
+          } else if (llmMessage?.id) {
+            // Generate embedding for LLM response (async, non-blocking)
+            import('../lib/semantic-search').then(({ generateAndStoreEmbedding }) => {
+              generateAndStoreEmbedding(llmMessage.id, llmResponse).catch(err => {
+                console.warn('Failed to generate embedding for LLM message (non-critical):', err)
+              })
+            })
           }
         } catch (llmError) {
           console.error('Error calling LLM:', llmError)
           // Save error message
-          await supabase.from('messages').insert({
-            room_id: roomId,
-            sender_id: null,
-            sender_name: 'Система',
-            text: `Ошибка получения ответа от LLM: ${(llmError as Error).message}`,
-          })
+          const { data: errorMessage, error: errorMessageError } = await supabase
+            .from('messages')
+            .insert({
+              room_id: roomId,
+              sender_id: null,
+              sender_name: 'Система',
+              text: `Ошибка получения ответа от LLM: ${(llmError as Error).message}`,
+            })
+            .select()
+            .single()
+
+          if (!errorMessageError && errorMessage?.id) {
+            // Generate embedding for error message too (for searchability)
+            import('../lib/semantic-search').then(({ generateAndStoreEmbedding }) => {
+              generateAndStoreEmbedding(errorMessage.id, errorMessage.text).catch(err => {
+                console.warn('Failed to generate embedding for error message (non-critical):', err)
+              })
+            })
+          }
         }
       } else {
         console.error('Room not found for LLM call')
