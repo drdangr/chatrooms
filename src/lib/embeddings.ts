@@ -1,7 +1,16 @@
 // Service for generating embeddings using OpenAI API
 // Used for semantic search functionality
 
-const OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small' // 1536 dimensions, cheaper
+// Model selection: 'text-embedding-3-small' (1536 dim, cheaper) or 'text-embedding-3-large' (3072 dim, better quality, especially for non-English)
+// For Russian/multilingual content, 'large' may provide better semantic understanding
+const OPENAI_EMBEDDING_MODEL = import.meta.env.VITE_OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small'
+
+// For text-embedding-3-small: 512, 1024, 1536 (default)
+// For text-embedding-3-large: 256, 1024, 3072 (default)
+// Lower dimensions = cheaper but slightly less accurate
+const EMBEDDING_DIMENSIONS = import.meta.env.VITE_OPENAI_EMBEDDING_DIMENSIONS 
+  ? parseInt(import.meta.env.VITE_OPENAI_EMBEDDING_DIMENSIONS) 
+  : undefined // Use model default
 
 interface EmbeddingResponse {
   data: Array<{
@@ -29,6 +38,8 @@ export async function generateEmbedding(text: string): Promise<number[]> {
     body: JSON.stringify({
       model: OPENAI_EMBEDDING_MODEL,
       input: text,
+      ...(EMBEDDING_DIMENSIONS && { dimensions: EMBEDDING_DIMENSIONS }),
+      // Optional: specify encoding_format if needed (default is float)
     }),
   })
 
@@ -61,6 +72,7 @@ export async function generateEmbeddingsBatch(texts: string[]): Promise<number[]
     body: JSON.stringify({
       model: OPENAI_EMBEDDING_MODEL,
       input: texts,
+      ...(EMBEDDING_DIMENSIONS && { dimensions: EMBEDDING_DIMENSIONS }),
     }),
   })
 
