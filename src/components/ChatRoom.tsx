@@ -52,6 +52,7 @@ export default function ChatRoom() {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searching, setSearching] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
+  const [backfilling, setBackfilling] = useState(false)
 
   useEffect(() => {
     loadRoom()
@@ -658,11 +659,29 @@ export default function ChatRoom() {
 
     setSearching(true)
     try {
+      console.log('🔍 User triggered search:', searchQuery.trim())
       const results = await searchMessagesSemantic(roomId, searchQuery.trim(), 5)
+      console.log('📋 Search results received:', results.length, 'results')
       setSearchResults(results)
+      
+      if (results.length === 0) {
+        // Check if any messages have embeddings
+        const { count } = await supabase
+          .from('messages')
+          .select('id', { count: 'exact', head: true })
+          .eq('room_id', roomId)
+          .not('embedding', 'is', null)
+        
+        console.log(`📊 Total messages with embeddings in room: ${count || 0}`)
+        
+        if (count === 0) {
+          console.warn('⚠️ No messages have embeddings! Embeddings may not be generating.')
+        }
+      }
     } catch (error) {
-      console.error('Error searching messages:', error)
-      alert('Ошибка при поиске: ' + (error as Error).message)
+      console.error('❌ Error searching messages:', error)
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      alert('Ошибка при поиске: ' + errorMessage + '\n\nПроверьте консоль для подробностей.')
     } finally {
       setSearching(false)
     }
@@ -894,6 +913,35 @@ export default function ChatRoom() {
               {searchQuery && searchResults.length === 0 && !searching && (
                 <div className="text-sm text-gray-500 text-center py-2">
                   Результаты не найдены. Попробуйте другой запрос.
+                </div>
+              )}
+              {!searchQuery && (
+                <div className="text-xs text-gray-600 text-center py-2 space-y-1">
+                  <div>💡 Подсказка: поиск работает по смыслу, а не по точному совпадению слов</div>
+                  {permissions.canManageRoles(userRole) && (
+                    <button
+                      onClick={async () => {
+                        if (!confirm('Пересоздать эмбединги для всех сообщений в этой комнате? Это может занять несколько минут.')) return
+                        
+                        setBackfilling(true)
+                        try {
+                          const { backfillRoomEmbeddings } = await import('../lib/backfill-all-embeddings')
+                          await backfillRoomEmbeddings(roomId!)
+                          alert('✅ Эмбединги пересозданы! Теперь поиск должен работать.')
+                          setShowSearch(false)
+                        } catch (error) {
+                          console.error('Error backfilling:', error)
+                          alert('Ошибка: ' + (error as Error).message)
+                        } finally {
+                          setBackfilling(false)
+                        }
+                      }}
+                      disabled={backfilling}
+                      className="mt-2 px-3 py-1.5 bg-yellow-500 hover:bg-yellow-600 text-white text-xs rounded transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+                    >
+                      {backfilling ? '⏳ Пересоздание...' : '🔄 Пересоздать эмбединги'}
+                    </button>
+                  )}
                 </div>
               )}
             </div>
