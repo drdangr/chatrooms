@@ -5,6 +5,8 @@ import { callOpenAI } from '../lib/openai'
 import PromptSettings from './PromptSettings'
 import { getUserRoleInRoom, permissions, Role } from '../lib/roles'
 import UserChip from './UserChip'
+import { searchMessagesSemantic } from '../lib/semantic-search'
+import type { SearchResult } from '../lib/semantic-search'
 
 interface Message {
   id: string
@@ -46,6 +48,10 @@ export default function ChatRoom() {
   const [deleting, setDeleting] = useState(false)
   const [userRole, setUserRole] = useState<Role | null>(null)
   const [roomUsers, setRoomUsers] = useState<Array<{ id: string; name: string; email: string; avatarUrl: string | null; role: Role }>>([])
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
+  const [searching, setSearching] = useState(false)
+  const [showSearch, setShowSearch] = useState(false)
 
   useEffect(() => {
     loadRoom()
@@ -397,7 +403,7 @@ export default function ChatRoom() {
 
     try {
       // Save user message
-      const { error: userMessageError } = await supabase
+      const { data: newMessage, error: userMessageError } = await supabase
         .from('messages')
         .insert({
           room_id: roomId,
@@ -405,8 +411,19 @@ export default function ChatRoom() {
           sender_name: user.user_metadata?.name || user.email || 'Пользователь',
           text: userMessageText,
         })
+        .select()
+        .single()
 
       if (userMessageError) throw userMessageError
+
+      // Generate embedding for semantic search (async, non-blocking)
+      if (newMessage?.id) {
+        import('../lib/semantic-search').then(({ generateAndStoreEmbedding }) => {
+          generateAndStoreEmbedding(newMessage.id, userMessageText).catch(err => {
+            console.warn('Failed to generate embedding (non-critical):', err)
+          })
+        })
+      }
 
       // Reload room data to ensure we have the latest settings
       const { data: currentRoom, error: roomError } = await supabase
@@ -614,6 +631,35 @@ export default function ChatRoom() {
     }
   }
 
+  const handleSemanticSearch = async () => {
+    if (!roomId || !searchQuery.trim()) return
+
+    setSearching(true)
+    try {
+      const results = await searchMessagesSemantic(roomId, searchQuery.trim(), 5)
+      setSearchResults(results)
+    } catch (error) {
+      console.error('Error searching messages:', error)
+      alert('Ошибка при поиске: ' + (error as Error).message)
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  const handleSearchResultClick = (messageId: string) => {
+    // Scroll to message in chat
+    const messageElement = document.getElementById(`message-${messageId}`)
+    if (messageElement) {
+      messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      // Highlight message briefly
+      messageElement.classList.add('bg-yellow-100')
+      setTimeout(() => {
+        messageElement.classList.remove('bg-yellow-100')
+      }, 2000)
+    }
+    setShowSearch(false)
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -721,6 +767,15 @@ export default function ChatRoom() {
                       </button>
                     )}
                     <button
+                      onClick={() => setShowSearch(!showSearch)}
+                      className="p-2 bg-green-500 hover:bg-green-600 text-white rounded-lg transition-colors"
+                      title="Семантический поиск"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                      </svg>
+                    </button>
+                    <button
                       onClick={() => setShowSettings(true)}
                       className="p-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors"
                       title="Настройки"
@@ -744,6 +799,83 @@ export default function ChatRoom() {
               </div>
             </div>
           </div>
+
+          {/* Semantic Search Panel */}
+          {showSearch && (
+            <div className="px-4 py-3 border-b border-gray-200 bg-green-50">
+              <div className="flex items-center gap-2 mb-2">
+                <svg className="w-5 h-5 text-green-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+                <span className="text-sm font-semibold text-green-800">Семантический поиск</span>
+                <button
+                  onClick={() => {
+                    setShowSearch(false)
+                    setSearchQuery('')
+                    setSearchResults([])
+                  }}
+                  className="ml-auto p-1 hover:bg-green-100 rounded transition-colors"
+                  title="Закрыть"
+                >
+                  <svg className="w-4 h-4 text-green-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              <div className="flex gap-2 mb-3">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      handleSemanticSearch()
+                    }
+                  }}
+                  placeholder="Введите запрос для поиска по смыслу..."
+                  className="flex-1 px-3 py-2 border border-green-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 text-sm"
+                />
+                <button
+                  onClick={handleSemanticSearch}
+                  disabled={!searchQuery.trim() || searching}
+                  className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors text-sm font-semibold disabled:bg-gray-400 disabled:cursor-not-allowed"
+                >
+                  {searching ? 'Поиск...' : 'Найти'}
+                </button>
+              </div>
+              {searchResults.length > 0 && (
+                <div className="mt-2 space-y-2 max-h-64 overflow-y-auto">
+                  <div className="text-xs text-green-700 font-semibold mb-1">
+                    Найдено {searchResults.length} сообщений:
+                  </div>
+                  {searchResults.map((result) => (
+                    <div
+                      key={result.id}
+                      onClick={() => handleSearchResultClick(result.id)}
+                      className="p-2 bg-white border border-green-200 rounded-lg cursor-pointer hover:bg-green-100 transition-colors"
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-medium text-gray-700">{result.sender_name}</span>
+                        <span className="text-xs text-green-600 font-semibold">
+                          {(result.similarity * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                      <div className="text-sm text-gray-800 line-clamp-2">{result.text}</div>
+                      <div className="text-xs text-gray-500 mt-1">
+                        {new Date(result.message_timestamp).toLocaleString('ru-RU')}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {searchQuery && searchResults.length === 0 && !searching && (
+                <div className="text-sm text-gray-500 text-center py-2">
+                  Результаты не найдены. Попробуйте другой запрос.
+                </div>
+              )}
+            </div>
+          )}
           
           {/* System Prompt Display */}
           <div className="px-4 pb-3 border-t border-gray-200 pt-3 bg-blue-50">
@@ -836,8 +968,9 @@ export default function ChatRoom() {
               
               return (
                 <div
+                  id={`message-${message.id}`}
                   key={message.id}
-                  className={`flex items-start gap-2 ${isUser ? 'justify-end' : 'justify-start'}`}
+                  className={`flex items-start gap-2 ${isUser ? 'justify-end' : 'justify-start'} transition-colors duration-300`}
                 >
                   {isSelectionMode && (
                     <input
