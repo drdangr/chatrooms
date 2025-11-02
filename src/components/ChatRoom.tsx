@@ -8,7 +8,7 @@ import { searchMessagesSemantic } from '../lib/semantic-search'
 import type { SearchResult } from '../lib/semantic-search'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { getOrCreateAssistantForRoom, sendMessageViaAssistant, deleteAssistant } from '../lib/assistants'
+import { getOrCreateAssistantForRoom, sendMessageViaAssistant, deleteAssistant, updateAssistantSummary, clearAssistantSummary } from '../lib/assistants'
 import { initializeTestAssistant } from '../lib/test-assistants'
 import FilesModal from './FilesModal'
 
@@ -32,6 +32,8 @@ interface Room {
   updated_at?: string
   temperature?: number
   is_test_room?: boolean
+  assistant_summary?: string | null
+  assistant_summary_updated_at?: string | null
 }
 
 interface RoomFile {
@@ -435,13 +437,38 @@ export default function ChatRoom() {
     if (!roomId) return
 
     try {
-      const { data, error } = await supabase
+      const baseQuery = supabase
         .from('rooms')
-        .select('*, is_test_room')
+        .select('id, title, system_prompt, model, created_by, created_at, updated_at, temperature, is_test_room, assistant_summary, assistant_summary_updated_at')
         .eq('id', roomId)
         .single()
 
-      if (error) throw error
+      let { data, error } = await baseQuery
+
+      if (error) {
+        if (error.code === '42703' || error.message?.includes('assistant_summary')) {
+          console.warn('Колонка assistant_summary не найдена. Используем fallback без summary.')
+          const fallback = await supabase
+            .from('rooms')
+            .select('*, is_test_room')
+            .eq('id', roomId)
+            .single()
+
+          if (fallback.error) throw fallback.error
+
+          data = {
+            ...fallback.data,
+            assistant_summary: null,
+            assistant_summary_updated_at: null,
+          }
+        } else {
+          throw error
+        }
+      }
+
+      if (!data) {
+        throw new Error('Room data is empty')
+      }
       
       console.log('📂 Loaded room:', {
         id: data.id,
@@ -589,7 +616,7 @@ export default function ChatRoom() {
       // Reload room data to ensure we have the latest settings
       const { data: currentRoom, error: roomError } = await supabase
         .from('rooms')
-        .select('*, is_test_room')
+        .select('id, title, system_prompt, model, created_by, created_at, updated_at, temperature, is_test_room, assistant_summary, assistant_summary_updated_at')
         .eq('id', roomId)
         .single()
 
@@ -597,6 +624,27 @@ export default function ChatRoom() {
         console.error('Error loading room for LLM call:', roomError)
         throw roomError
       }
+
+      // Получаем последние сообщения для контекста (используется в чат-режиме и fallback)
+      const { data: recentMessages } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('room_id', roomId)
+        .order('timestamp', { ascending: false })
+        .limit(10)
+
+      const messagesForContext = (recentMessages || []).reverse().map((msg) => ({
+        sender_name: msg.sender_name,
+        text: msg.text,
+      }))
+
+      const baseSystemPrompt = currentRoom.system_prompt?.trim() || 'Вы - полезный ассистент.'
+      const summaryText = currentRoom.assistant_summary?.trim()
+      const systemPromptForChat = summaryText
+        ? `${baseSystemPrompt}\n\nКонтекст предыдущей работы с файлами: ${summaryText}`
+        : baseSystemPrompt
+      const modelForChat = currentRoom.model || 'gpt-4o-mini'
+      const temperatureForChat = typeof currentRoom.temperature === 'number' ? currentRoom.temperature : undefined
 
       // Гибридный подход: автоматически определяем, нужно ли использовать Assistants API
       const hasOpenAIFiles = files.some(f => f.openai_file_id)
@@ -619,7 +667,8 @@ export default function ChatRoom() {
             roomId,
             currentRoom.system_prompt || 'Вы - полезный ассистент.',
             currentRoom.model || 'gpt-4o',
-            fileIdsForSearch
+            fileIdsForSearch,
+            { skipBootstrapLatestMessage: true }
           )
           
           setAssistantConfig({
@@ -748,7 +797,8 @@ export default function ChatRoom() {
                     roomId,
                     currentRoom.system_prompt || 'Вы - полезный ассистент.',
                     currentRoom.model || 'gpt-4o',
-                    fileIdsForSearch
+                    fileIdsForSearch,
+                    { skipBootstrapLatestMessage: true }
                   )
                   
                   setAssistantConfig({
@@ -770,10 +820,10 @@ export default function ChatRoom() {
                   setUsingAssistantsAPI(false)
                   
                   const chatResponse = await callOpenAI(
-                    userMessageText,
-                    currentRoom.system_prompt || '',
-                    currentRoom.model || 'gpt-4o',
-                    currentRoom.temperature || 0.7
+                    systemPromptForChat,
+                    messagesForContext,
+                    modelForChat,
+                    temperatureForChat
                   )
                   
                   const { error: llmMessageError } = await supabase
@@ -799,10 +849,10 @@ export default function ChatRoom() {
                 setAssistantConfig(null)
                 
                 const chatResponse = await callOpenAI(
-                  userMessageText,
-                  currentRoom.system_prompt || '',
-                  currentRoom.model || 'gpt-4o',
-                  currentRoom.temperature || 0.7
+                  systemPromptForChat,
+                  messagesForContext,
+                  modelForChat,
+                  temperatureForChat
                 )
                 
                 const { error: llmMessageError } = await supabase
@@ -846,6 +896,13 @@ export default function ChatRoom() {
                 console.warn('Failed to generate embedding for LLM message (non-critical):', err)
               })
             })
+
+            try {
+              await updateAssistantSummary(roomId)
+              await loadRoom()
+            } catch (summaryError) {
+              console.warn('Не удалось обновить summary ассистента:', summaryError)
+            }
           }
         } catch (llmError) {
           console.error('Error calling Assistants API:', llmError)
@@ -878,26 +935,12 @@ export default function ChatRoom() {
           roomId,
         })
 
-        // Get recent messages for context (last 10 messages)
-        const { data: recentMessages } = await supabase
-          .from('messages')
-          .select('*')
-          .eq('room_id', roomId)
-          .order('timestamp', { ascending: false })
-          .limit(10)
-
-        // Reverse to get chronological order
-        const messagesForContext = (recentMessages || []).reverse().map((msg) => ({
-          sender_name: msg.sender_name,
-          text: msg.text,
-        }))
-
         // Call LLM API with current room settings
         if (currentRoom) {
           try {
-            const systemPrompt = currentRoom.system_prompt?.trim() || 'Вы - полезный ассистент.'
-            const model = currentRoom.model || 'gpt-4o-mini'
-            const temperature = typeof currentRoom.temperature === 'number' ? currentRoom.temperature : undefined
+            const systemPrompt = systemPromptForChat
+            const model = modelForChat
+            const temperature = temperatureForChat
             
             console.log('🤖 Calling LLM with:', {
               prompt: systemPrompt,
@@ -1565,8 +1608,10 @@ export default function ChatRoom() {
               console.log('🗑️  Все файлы удалены, удаляем Assistant и переключаемся на Chat Completions')
               try {
                 await deleteAssistant(assistantConfig.assistantId, roomId)
+                await clearAssistantSummary(roomId)
                 setAssistantConfig(null)
                 setUsingAssistantsAPI(false)
+                await loadRoom()
               } catch (error) {
                 console.warn('Не удалось удалить Assistant:', error)
               }

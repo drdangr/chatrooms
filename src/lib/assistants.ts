@@ -1,4 +1,5 @@
 import { supabase } from './supabase'
+import { callOpenAI } from './openai'
 
 const ASSISTANTS_API_VERSION = 'assistants=v2'
 
@@ -118,6 +119,169 @@ async function filterValidFiles(fileIds: string[]): Promise<{
   }
 
   return { valid, invalid }
+}
+
+const THREAD_BOOTSTRAP_MESSAGE_LIMIT = 30
+const SUMMARY_MESSAGE_LIMIT = 30
+const SUMMARY_MAX_CHARS = 6000
+
+function mapSenderToRole(senderName: string): 'user' | 'assistant' {
+  const normalized = (senderName || '').toLowerCase()
+
+  if (normalized.includes('llm') || normalized === 'assistant' || normalized === 'система') {
+    return 'assistant'
+  }
+
+  return 'user'
+}
+
+async function bootstrapAssistantThread(
+  roomId: string,
+  threadId: string,
+  options: { skipLatestMessage?: boolean } = {}
+): Promise<void> {
+  try {
+    const { data: messages, error } = await supabase
+      .from('messages')
+      .select('sender_name, text, created_at')
+      .eq('room_id', roomId)
+      .order('created_at', { ascending: true })
+      .limit(THREAD_BOOTSTRAP_MESSAGE_LIMIT)
+
+    if (error) {
+      console.warn('⚠️  Не удалось получить историю сообщений для Assistant:', error)
+      return
+    }
+
+    if (!messages || messages.length === 0) {
+      return
+    }
+
+    const messagesToReplay = options.skipLatestMessage ? messages.slice(0, -1) : messages
+
+    if (!messagesToReplay.length) {
+      return
+    }
+
+    console.log(`📜 Bootstrap assistant thread: воспроизводим ${messagesToReplay.length} сообщений`)
+
+    for (const message of messagesToReplay) {
+      const content = message.text?.trim()
+      if (!content) continue
+
+      const role = mapSenderToRole(message.sender_name)
+
+      try {
+        const response = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
+          method: 'POST',
+          headers: getAssistantsHeaders(),
+          body: JSON.stringify({
+            role,
+            content,
+          }),
+        })
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}))
+          console.warn('⚠️  Не удалось добавить сообщение в thread при bootstrap:', errorData)
+        }
+      } catch (err) {
+        console.warn('⚠️  Ошибка bootstrap thread:', err)
+      }
+
+      // Небольшая задержка, чтобы не спамить API
+      await new Promise((resolve) => setTimeout(resolve, 150))
+    }
+  } catch (err) {
+    console.warn('⚠️  Ошибка при bootstrap assistant thread:', err)
+  }
+}
+
+export async function updateAssistantSummary(roomId: string): Promise<void> {
+  try {
+    const { data: room, error: roomError } = await supabase
+      .from('rooms')
+      .select('assistant_summary_updated_at')
+      .eq('id', roomId)
+      .single()
+
+    if (roomError) {
+      console.warn('⚠️  Не удалось получить информацию о комнате для обновления summary:', roomError)
+    }
+
+    const { data: messages, error: messagesError } = await supabase
+      .from('messages')
+      .select('sender_name, text, created_at')
+      .eq('room_id', roomId)
+      .order('created_at', { ascending: true })
+      .limit(SUMMARY_MESSAGE_LIMIT)
+
+    if (messagesError) {
+      console.warn('⚠️  Не удалось получить сообщения для summary:', messagesError)
+      return
+    }
+
+    if (!messages || messages.length === 0) {
+      return
+    }
+
+    const lastMessage = messages[messages.length - 1]
+    const lastMessageTime = lastMessage?.created_at ? new Date(lastMessage.created_at) : null
+
+    if (room?.assistant_summary_updated_at && lastMessageTime) {
+      const updatedAt = new Date(room.assistant_summary_updated_at)
+      if (updatedAt >= lastMessageTime) {
+        // Summary уже актуально
+        return
+      }
+    }
+
+    const conversationText = messages
+      .map((msg) => `${msg.sender_name || 'Участник'}: ${msg.text || ''}`)
+      .join('\n')
+      .slice(-SUMMARY_MAX_CHARS)
+
+    const summaryInstruction = `Ты выступаешь как помощник, который кратко пересказывает историю диалога между пользователями и ассистентом.\n` +
+      `Сформулируй краткий, связный summary на русском языке: перечисли главные решения, файлы и вопросы. Не добавляй новых фактов.`
+
+    const summary = await callOpenAI(
+      summaryInstruction,
+      [
+        {
+          sender_name: 'Диалог',
+          text: conversationText,
+        },
+      ],
+      'gpt-4o-mini',
+      0.2
+    )
+
+    await supabase
+      .from('rooms')
+      .update({
+        assistant_summary: summary,
+        assistant_summary_updated_at: new Date().toISOString(),
+      })
+      .eq('id', roomId)
+
+    console.log('📝 Обновлен summary ассистента для комнаты', roomId)
+  } catch (error) {
+    console.warn('⚠️  Не удалось обновить summary ассистента:', error)
+  }
+}
+
+export async function clearAssistantSummary(roomId: string): Promise<void> {
+  try {
+    await supabase
+      .from('rooms')
+      .update({
+        assistant_summary: null,
+        assistant_summary_updated_at: null,
+      })
+      .eq('id', roomId)
+  } catch (error) {
+    console.warn('⚠️  Не удалось очистить summary ассистента:', error)
+  }
 }
 
 /**
@@ -687,7 +851,8 @@ export async function getOrCreateAssistantForRoom(
   roomId: string,
   systemPrompt: string,
   model: string,
-  fileIds: string[] = []
+  fileIds: string[] = [],
+  options: { skipBootstrapLatestMessage?: boolean } = {}
 ): Promise<AssistantConfig> {
   try {
     // Проверяем, есть ли уже assistant в БД
@@ -723,6 +888,11 @@ export async function getOrCreateAssistantForRoom(
     const assistantId = await createAssistant(systemPrompt, model, fileIds)
     const threadId = await createThread()
     
+    // Загружаем историю комнаты в новый thread Assistant
+    await bootstrapAssistantThread(roomId, threadId, {
+      skipLatestMessage: options.skipBootstrapLatestMessage,
+    })
+
     // Сохраняем в БД
     const { error: insertError } = await supabase
       .from('room_assistants')
