@@ -1274,6 +1274,72 @@ export default function ChatRoom() {
     setShowSearch(false)
   }
 
+  const saveMessagesToFile = (messageId: string) => {
+    const ids = selectedMessages.size > 0 ? Array.from(selectedMessages) : [messageId]
+    if (!ids.includes(messageId)) {
+      ids.push(messageId)
+    }
+
+    const exportedMessages = messages
+      .filter((m) => ids.includes(m.id))
+      .map((m) => ({
+        sender: (m.sender_name || 'Участник').trim(),
+        timestamp: new Date(m.timestamp).toLocaleString('ru-RU'),
+        text: (m.text || '').trim(),
+      }))
+
+    if (exportedMessages.length === 0) {
+      alert('Нет сообщений для сохранения')
+      setOpenMessageMenu(null)
+      return
+    }
+
+    const markdownContent = exportedMessages
+      .map((msg) => `**${msg.sender}**  
+_${msg.timestamp}_
+  
+${msg.text}`)
+      .join('\n\n---\n\n')
+
+    const blob = new Blob([markdownContent], { type: 'text/markdown;charset=utf-8' })
+    const filename = `chat-export-${roomId}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.md`
+
+    if ('showSaveFilePicker' in window) {
+      ;(async () => {
+        try {
+          const handle = await (window as any).showSaveFilePicker({
+            suggestedName: filename,
+            types: [
+              {
+                description: 'Markdown file',
+                accept: { 'text/markdown': ['.md'] },
+              },
+            ],
+          })
+          const writable = await handle.createWritable()
+          await writable.write(blob)
+          await writable.close()
+        } catch (error) {
+          if ((error as Error).name !== 'AbortError') {
+            console.error('Ошибка сохранения файла:', error)
+            alert('Не удалось сохранить файл: ' + (error as Error).message)
+          }
+        }
+      })()
+    } else {
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+    }
+
+    setOpenMessageMenu(null)
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -1629,6 +1695,14 @@ export default function ChatRoom() {
                             disabled={messageActionLoading || deleting || !permissions.canDeleteMessages(userRole)}
                           >
                             Удалить
+                          </button>
+                          <button
+                            type="button"
+                            className="px-3 py-1.5 text-sm text-left text-gray-700 hover:bg-gray-100"
+                            onClick={() => saveMessagesToFile(message.id)}
+                            disabled={messageActionLoading || deleting}
+                          >
+                            Сохранить в файл
                           </button>
                         </div>
                       )}
