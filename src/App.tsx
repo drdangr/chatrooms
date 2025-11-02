@@ -6,6 +6,7 @@ import AuthCallback from './components/AuthCallback'
 import Layout from './components/Layout'
 import ChatList from './components/ChatList'
 import ChatRoom from './components/ChatRoom'
+import AssistantsTestRoom from './components/AssistantsTestRoom'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true)
@@ -59,6 +60,16 @@ function App() {
             <ProtectedRoute>
               <Layout>
                 <ChatRoom />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/test-assistants"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <AssistantsTestRoom />
               </Layout>
             </ProtectedRoute>
           }

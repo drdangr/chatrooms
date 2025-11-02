@@ -9,6 +9,9 @@ import { searchMessagesSemantic } from '../lib/semantic-search'
 import type { SearchResult } from '../lib/semantic-search'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { getOrCreateAssistantForRoom, sendMessageViaAssistant, deleteAssistant } from '../lib/assistants'
+import { initializeTestAssistant } from '../lib/test-assistants'
+import { uploadFile, validateFile, deleteFile as deleteFileUtil } from '../lib/file-upload'
 
 interface Message {
   id: string
@@ -29,6 +32,17 @@ interface Room {
   created_at: string
   updated_at?: string
   temperature?: number
+  is_test_room?: boolean
+}
+
+interface File {
+  id: string
+  filename: string
+  file_type: string
+  size: number
+  file_url: string
+  openai_file_id: string | null
+  created_at: string
 }
 
 export default function ChatRoom() {
@@ -56,6 +70,17 @@ export default function ChatRoom() {
   const [searching, setSearching] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
   const [backfilling, setBackfilling] = useState(false)
+  const [files, setFiles] = useState<File[]>([])
+  const [assistantConfig, setAssistantConfig] = useState<{
+    assistantId: string
+    threadId: string
+  } | null>(null)
+  const [initializing, setInitializing] = useState(false)
+  const [usingAssistantsAPI, setUsingAssistantsAPI] = useState(false)
+  const [uploadingFiles, setUploadingFiles] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({})
+  const [dragActive, setDragActive] = useState(false)
+  const [filesPanelExpanded, setFilesPanelExpanded] = useState(false)
 
   useEffect(() => {
     loadRoom()
@@ -340,13 +365,76 @@ export default function ChatRoom() {
     }
   }
 
+  const loadFiles = async () => {
+    if (!roomId) return
+    
+    try {
+      const { data: roomFiles, error: filesError } = await supabase
+        .from('files')
+        .select('*')
+        .eq('room_id', roomId)
+        .not('file_url', 'like', 'mock://%')  // Исключаем мокап файлы
+        .order('created_at', { ascending: true })
+
+      if (filesError) {
+        console.error('Ошибка загрузки файлов:', filesError)
+      } else {
+        setFiles(roomFiles || [])
+        
+        // Гибридный подход: автоматически проверяем наличие файлов для ВСЕХ комнат
+        const hasOpenAIFiles = (roomFiles || []).some(f => f.openai_file_id)
+        
+        if (hasOpenAIFiles) {
+          // Проверяем, есть ли уже настроенный Assistant
+          const { data: existingAssistant, error: assistantError } = await supabase
+            .from('room_assistants')
+            .select('assistant_id, thread_id')
+            .eq('room_id', roomId)
+            .maybeSingle()
+
+          // Игнорируем ошибки 406 и "нет записи"
+          if (assistantError && assistantError.code !== 'PGRST116' && assistantError.code !== 'PGRST301') {
+            console.warn('Error checking existing assistant (non-critical):', assistantError)
+          }
+
+          if (existingAssistant) {
+            setAssistantConfig({
+              assistantId: existingAssistant.assistant_id,
+              threadId: existingAssistant.thread_id,
+            })
+            setUsingAssistantsAPI(true)
+          } else if (room) {
+            // Если файлы есть, но Assistant еще не создан - создадим его при следующем сообщении
+            // Не создаем сразу, чтобы не блокировать UI
+            console.log('📋 Файлы с openai_file_id найдены, Assistant будет создан при первом сообщении')
+          }
+        } else {
+          // Если файлов нет - используем обычный Chat Completions API
+          // Если был Assistant, можно его оставить (он просто не будет использоваться)
+          // Или удалить для очистки - пока оставляем
+          setUsingAssistantsAPI(false)
+          // Не сбрасываем assistantConfig, так как он может понадобиться, если файлы появятся снова
+        }
+      }
+    } catch (error) {
+      console.error('Error loading files:', error)
+    }
+  }
+
+  // Загружаем файлы после загрузки комнаты
+  useEffect(() => {
+    if (room) {
+      loadFiles()
+    }
+  }, [room?.id, room?.is_test_room])
+
   const loadRoom = async () => {
     if (!roomId) return
 
     try {
       const { data, error } = await supabase
         .from('rooms')
-        .select('*')
+        .select('*, is_test_room')
         .eq('id', roomId)
         .single()
 
@@ -403,6 +491,186 @@ export default function ChatRoom() {
   }
 
 
+  const handleFileUpload = async (selectedFiles: FileList | File[]) => {
+    if (!roomId || !user || !permissions.canSendMessages(userRole)) {
+      alert('У вас нет прав для загрузки файлов')
+      return
+    }
+
+    const filesArray = Array.from(selectedFiles)
+    if (filesArray.length === 0) return
+
+    setUploadingFiles(true)
+    const progress: Record<string, number> = {}
+
+    try {
+      // Гибридный подход: всегда загружаем файлы в OpenAI для возможности использования Assistants API
+      // Assistant будет автоматически создан при первом сообщении, если файлы есть
+      const shouldUploadToOpenAI = true
+
+      for (const file of filesArray) {
+        // Валидация
+        const validation = validateFile(file)
+        if (!validation.valid) {
+          alert(`Файл "${file.name}": ${validation.error}`)
+          continue
+        }
+
+        try {
+          progress[file.name] = 0
+          setUploadProgress({ ...progress })
+
+          // Загружаем файл (всегда в OpenAI для гибридного подхода)
+          const result = await uploadFile(
+            file,
+            roomId,
+            user.id,
+            shouldUploadToOpenAI
+          )
+
+          progress[file.name] = 100
+          setUploadProgress({ ...progress })
+
+          console.log(`✅ Файл ${file.name} загружен, ID: ${result.fileId}`)
+
+          // Если файл загружен в OpenAI, Assistant будет создан автоматически при следующем сообщении
+          if (result.openaiFileId) {
+            console.log('📋 Файл загружен в OpenAI, Assistant будет создан автоматически при первом сообщении')
+          }
+        } catch (error) {
+          console.error(`Ошибка загрузки файла ${file.name}:`, error)
+          alert(`Ошибка загрузки файла "${file.name}": ${(error as Error).message}`)
+        }
+      }
+
+      // Перезагружаем список файлов
+      await loadFiles()
+    } catch (error) {
+      console.error('Error uploading files:', error)
+      alert('Ошибка при загрузке файлов: ' + (error as Error).message)
+    } finally {
+      setUploadingFiles(false)
+      setUploadProgress({})
+    }
+  }
+
+  const handleDrag = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.type === 'dragenter' || e.type === 'dragover') {
+      setDragActive(true)
+    } else if (e.type === 'dragleave') {
+      setDragActive(false)
+    }
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragActive(false)
+
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleFileUpload(e.dataTransfer.files)
+    }
+  }
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      handleFileUpload(e.target.files)
+    }
+  }
+
+  const handleDeleteFile = async (fileId: string, fileUrl: string, openaiFileId: string | null) => {
+    if (!user || !permissions.canSendMessages(userRole)) {
+      alert('У вас нет прав для удаления файлов')
+      return
+    }
+
+    if (!confirm('Удалить этот файл?')) {
+      return
+    }
+
+    try {
+      await deleteFileUtil(fileId, fileUrl, openaiFileId, user.id)
+      
+      // Перезагружаем список файлов
+      await loadFiles()
+      
+      // Если файлов больше нет - удаляем Assistant и переключаемся на Chat Completions
+      const remainingFiles = files.filter(f => f.id !== fileId)
+      const hasRemainingFiles = remainingFiles.some(f => f.openai_file_id)
+      
+      if (!hasRemainingFiles && assistantConfig && usingAssistantsAPI && roomId) {
+        console.log('🗑️  Все файлы удалены, удаляем Assistant и переключаемся на Chat Completions')
+        try {
+          await deleteAssistant(assistantConfig.assistantId, roomId)
+          setAssistantConfig(null)
+          setUsingAssistantsAPI(false)
+        } catch (error) {
+          console.warn('Не удалось удалить Assistant:', error)
+        }
+      }
+    } catch (error) {
+      console.error('Error deleting file:', error)
+      alert('Ошибка при удалении файла: ' + (error as Error).message)
+    }
+  }
+
+  const handleInitializeAssistant = async () => {
+    if (!room) return
+
+    try {
+      setInitializing(true)
+      
+      // Если Assistant уже существует, удаляем его перед пересозданием
+      if (assistantConfig) {
+        const confirmDelete = confirm(
+          'Assistant уже инициализирован. Удалить существующий и создать новый?'
+        )
+        if (!confirmDelete) {
+          setInitializing(false)
+          return
+        }
+        
+        try {
+          await deleteAssistant(assistantConfig.assistantId, room.id)
+          setAssistantConfig(null)
+          setUsingAssistantsAPI(false)
+        } catch (err) {
+          console.warn('Could not delete existing assistant:', err)
+          // Продолжаем создание нового
+        }
+      }
+      
+      const config = await initializeTestAssistant(room.id, room.system_prompt, room.model)
+      
+      setAssistantConfig({
+        assistantId: config.assistantId,
+        threadId: config.threadId,
+      })
+      
+      setUsingAssistantsAPI(true)
+      
+      // Небольшая задержка перед перезагрузкой файлов, чтобы БД успела обновиться
+      await new Promise(resolve => setTimeout(resolve, 500))
+      
+      // Перезагружаем файлы для отображения openai_file_id
+      await loadFiles()
+      
+      // Дополнительная проверка через секунду (на случай, если обновление БД заняло больше времени)
+      setTimeout(async () => {
+        await loadFiles()
+      }, 1000)
+      
+      alert('✅ Assistant успешно инициализирован!')
+    } catch (err) {
+      console.error('Error initializing assistant:', err)
+      alert('Ошибка инициализации Assistant: ' + (err as Error).message)
+    } finally {
+      setInitializing(false)
+    }
+  }
+
   const handleSendMessage = async () => {
     if (!messageText.trim() || !roomId || !user) return
 
@@ -442,7 +710,7 @@ export default function ChatRoom() {
       // Reload room data to ensure we have the latest settings
       const { data: currentRoom, error: roomError } = await supabase
         .from('rooms')
-        .select('*')
+        .select('*, is_test_room')
         .eq('id', roomId)
         .single()
 
@@ -451,48 +719,78 @@ export default function ChatRoom() {
         throw roomError
       }
 
-      console.log('📋 Current room settings:', {
-        system_prompt: currentRoom?.system_prompt,
-        model: currentRoom?.model,
-        temperature: currentRoom?.temperature,
-        roomId,
-      })
-
-      // Get recent messages for context (last 10 messages)
-      const { data: recentMessages } = await supabase
-        .from('messages')
-        .select('*')
-        .eq('room_id', roomId)
-        .order('timestamp', { ascending: false })
-        .limit(10)
-
-      // Reverse to get chronological order
-      const messagesForContext = (recentMessages || []).reverse().map((msg) => ({
-        sender_name: msg.sender_name,
-        text: msg.text,
-      }))
-
-      // Call LLM API with current room settings
-      if (currentRoom) {
+      // Гибридный подход: автоматически определяем, нужно ли использовать Assistants API
+      const hasOpenAIFiles = files.some(f => f.openai_file_id)
+      
+      // Если есть файлы в OpenAI, но Assistant еще не создан - создаем его
+      if (hasOpenAIFiles && !assistantConfig && currentRoom) {
         try {
-          const systemPrompt = currentRoom.system_prompt?.trim() || 'Вы - полезный ассистент.'
-          const model = currentRoom.model || 'gpt-4o-mini'
-          const temperature = typeof currentRoom.temperature === 'number' ? currentRoom.temperature : undefined
+          console.log('🤖 Автоматическое создание Assistant для работы с файлами...')
           
-          console.log('🤖 Calling LLM with:', {
-            prompt: systemPrompt,
-            promptLength: systemPrompt.length,
-            model: model,
-            messagesCount: messagesForContext.length,
-            temperature,
+          // Собираем file IDs (исключаем изображения для file_search, они передаются напрямую в сообщениях)
+          const fileIdsForSearch = files
+            .filter(f => {
+              // file_search поддерживает только текстовые файлы, не изображения
+              const isImage = f.file_type?.startsWith('image/')
+              return f.openai_file_id && !isImage
+            })
+            .map(f => f.openai_file_id!)
+          
+          const config = await getOrCreateAssistantForRoom(
+            roomId,
+            currentRoom.system_prompt || 'Вы - полезный ассистент.',
+            currentRoom.model || 'gpt-4o',
+            fileIdsForSearch
+          )
+          
+          setAssistantConfig({
+            assistantId: config.assistantId,
+            threadId: config.threadId,
           })
+          setUsingAssistantsAPI(true)
           
-          // Get LLM response
-          const llmResponse = await callOpenAI(
-            systemPrompt,
-            messagesForContext,
-            model,
-            temperature
+          console.log('✅ Assistant автоматически создан')
+        } catch (error) {
+          console.error('Ошибка автоматического создания Assistant:', error)
+          // Продолжаем с обычным Chat Completions API
+        }
+      }
+      
+      // Используем Assistants API если есть Assistant и файлы
+      const shouldUseAssistants = usingAssistantsAPI && assistantConfig && hasOpenAIFiles
+
+      if (shouldUseAssistants && assistantConfig) {
+        // Используем Assistants API
+        try {
+          console.log('🤖 Using Assistants API')
+          
+          // Собираем file IDs изображений для передачи в сообщении
+          // Изображения передаются напрямую в сообщении (не через file_search)
+          // OpenAI Vision API поддерживает только: PNG, JPEG, GIF, WebP (НЕ SVG)
+          const imageFileIds = files
+            .filter(f => {
+              // Проверяем тип файла
+              const isImage = f.file_type?.startsWith('image/') || 
+                            f.filename.match(/\.(png|jpg|jpeg|gif|webp)$/i)
+              // Исключаем SVG - не поддерживается Vision API
+              const isSvg = f.file_type === 'image/svg+xml' || f.filename.match(/\.svg$/i)
+              // Только файлы с валидным openai_file_id и правильным форматом
+              const hasValidFormat = f.filename.match(/\.(png|jpg|jpeg|gif|webp)$/i) && 
+                                   f.file_type && 
+                                   ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp'].includes(f.file_type)
+              return isImage && !isSvg && f.openai_file_id && hasValidFormat
+            })
+            .map(f => f.openai_file_id!)
+          
+          if (imageFileIds.length > 0) {
+            console.log(`🖼️  Attaching ${imageFileIds.length} image(s) to message`)
+          }
+          
+          const llmResponse = await sendMessageViaAssistant(
+            assistantConfig.assistantId,
+            assistantConfig.threadId,
+            userMessageText,
+            imageFileIds
           )
 
           // Save LLM response
@@ -501,7 +799,7 @@ export default function ChatRoom() {
             .insert({
               room_id: roomId,
               sender_id: null,
-              sender_name: 'LLM',
+              sender_name: 'LLM (Assistants API)',
               text: llmResponse,
             })
             .select()
@@ -509,7 +807,6 @@ export default function ChatRoom() {
 
           if (llmMessageError) {
             console.error('Error saving LLM response:', llmMessageError)
-            // Don't throw, just log - user message is already saved
           } else if (llmMessage?.id) {
             // Generate embedding for LLM response (async, non-blocking)
             import('../lib/semantic-search').then(({ generateAndStoreEmbedding }) => {
@@ -519,7 +816,7 @@ export default function ChatRoom() {
             })
           }
         } catch (llmError) {
-          console.error('Error calling LLM:', llmError)
+          console.error('Error calling Assistants API:', llmError)
           // Save error message
           const { data: errorMessage, error: errorMessageError } = await supabase
             .from('messages')
@@ -527,13 +824,12 @@ export default function ChatRoom() {
               room_id: roomId,
               sender_id: null,
               sender_name: 'Система',
-              text: `Ошибка получения ответа от LLM: ${(llmError as Error).message}`,
+              text: `Ошибка получения ответа от Assistants API: ${(llmError as Error).message}`,
             })
             .select()
             .single()
 
           if (!errorMessageError && errorMessage?.id) {
-            // Generate embedding for error message too (for searchability)
             import('../lib/semantic-search').then(({ generateAndStoreEmbedding }) => {
               generateAndStoreEmbedding(errorMessage.id, errorMessage.text).catch(err => {
                 console.warn('Failed to generate embedding for error message (non-critical):', err)
@@ -542,7 +838,100 @@ export default function ChatRoom() {
           }
         }
       } else {
-        console.error('Room not found for LLM call')
+        // Используем обычный Chat Completions API
+        console.log('📋 Current room settings:', {
+          system_prompt: currentRoom?.system_prompt,
+          model: currentRoom?.model,
+          temperature: currentRoom?.temperature,
+          roomId,
+        })
+
+        // Get recent messages for context (last 10 messages)
+        const { data: recentMessages } = await supabase
+          .from('messages')
+          .select('*')
+          .eq('room_id', roomId)
+          .order('timestamp', { ascending: false })
+          .limit(10)
+
+        // Reverse to get chronological order
+        const messagesForContext = (recentMessages || []).reverse().map((msg) => ({
+          sender_name: msg.sender_name,
+          text: msg.text,
+        }))
+
+        // Call LLM API with current room settings
+        if (currentRoom) {
+          try {
+            const systemPrompt = currentRoom.system_prompt?.trim() || 'Вы - полезный ассистент.'
+            const model = currentRoom.model || 'gpt-4o-mini'
+            const temperature = typeof currentRoom.temperature === 'number' ? currentRoom.temperature : undefined
+            
+            console.log('🤖 Calling LLM with:', {
+              prompt: systemPrompt,
+              promptLength: systemPrompt.length,
+              model: model,
+              messagesCount: messagesForContext.length,
+              temperature,
+            })
+            
+            // Get LLM response
+            const llmResponse = await callOpenAI(
+              systemPrompt,
+              messagesForContext,
+              model,
+              temperature
+            )
+
+            // Save LLM response
+            const { data: llmMessage, error: llmMessageError } = await supabase
+              .from('messages')
+              .insert({
+                room_id: roomId,
+                sender_id: null,
+                sender_name: 'LLM',
+                text: llmResponse,
+              })
+              .select()
+              .single()
+
+            if (llmMessageError) {
+              console.error('Error saving LLM response:', llmMessageError)
+              // Don't throw, just log - user message is already saved
+            } else if (llmMessage?.id) {
+              // Generate embedding for LLM response (async, non-blocking)
+              import('../lib/semantic-search').then(({ generateAndStoreEmbedding }) => {
+                generateAndStoreEmbedding(llmMessage.id, llmResponse).catch(err => {
+                  console.warn('Failed to generate embedding for LLM message (non-critical):', err)
+                })
+              })
+            }
+          } catch (llmError) {
+            console.error('Error calling LLM:', llmError)
+            // Save error message
+            const { data: errorMessage, error: errorMessageError } = await supabase
+              .from('messages')
+              .insert({
+                room_id: roomId,
+                sender_id: null,
+                sender_name: 'Система',
+                text: `Ошибка получения ответа от LLM: ${(llmError as Error).message}`,
+              })
+              .select()
+              .single()
+
+            if (!errorMessageError && errorMessage?.id) {
+              // Generate embedding for error message too (for searchability)
+              import('../lib/semantic-search').then(({ generateAndStoreEmbedding }) => {
+                generateAndStoreEmbedding(errorMessage.id, errorMessage.text).catch(err => {
+                  console.warn('Failed to generate embedding for error message (non-critical):', err)
+                })
+              })
+            }
+          }
+        } else {
+          console.error('Room not found for LLM call')
+        }
       }
     } catch (error) {
       console.error('Error sending message:', error)
@@ -856,6 +1245,210 @@ export default function ChatRoom() {
                 )}
               </div>
             </div>
+          </div>
+
+          {/* Кнопка инициализации Assistant для тестовых комнат */}
+          {room.is_test_room && !assistantConfig && (
+            <div className="px-4 py-2 border-b border-gray-200 bg-purple-50">
+              <button
+                onClick={handleInitializeAssistant}
+                disabled={initializing}
+                className="w-full px-4 py-2 bg-purple-500 text-white rounded hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
+              >
+                {initializing ? 'Инициализация Assistant...' : 'Инициализировать Assistant'}
+              </button>
+            </div>
+          )}
+
+          {/* Статус Assistant для тестовых комнат */}
+          {room.is_test_room && assistantConfig && (
+            <div className="px-4 py-2 border-b border-gray-200 bg-green-50 flex items-center justify-between">
+              <div>
+                <div className="text-sm text-green-800 font-medium">
+                  ✅ Assistant готов к работе
+                </div>
+                <div className="text-xs text-green-600 mt-0.5">
+                  Assistants API активен
+                </div>
+              </div>
+              <button
+                onClick={handleInitializeAssistant}
+                disabled={initializing}
+                className="px-3 py-1.5 bg-purple-400 text-white rounded hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-xs whitespace-nowrap"
+                title="Переинициализировать Assistant"
+              >
+                {initializing ? '...' : '🔄'}
+              </button>
+            </div>
+          )}
+
+          {/* File Upload Panel - для всех комнат (аккордеон) */}
+          <div className="px-4 py-2 border-b border-gray-200 bg-blue-50">
+            <button
+              onClick={() => setFilesPanelExpanded(!filesPanelExpanded)}
+              className="w-full flex items-center justify-between gap-2 text-left hover:bg-blue-100 rounded p-2 -mx-2 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <svg 
+                  className={`w-4 h-4 text-blue-700 transition-transform ${filesPanelExpanded ? 'rotate-90' : ''}`} 
+                  fill="none" 
+                  stroke="currentColor" 
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+                <svg className="w-5 h-5 text-blue-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                </svg>
+                <span className="text-sm font-semibold text-blue-800">Файлы комнаты</span>
+                {files.length > 0 && (
+                  <span className="text-xs text-blue-600">({files.length})</span>
+                )}
+              </div>
+            </button>
+
+            {filesPanelExpanded && (
+              <div className="mt-3 space-y-3">
+                {/* Зона drag & drop */}
+                <div
+                  onDragEnter={handleDrag}
+                  onDragLeave={handleDrag}
+                  onDragOver={handleDrag}
+                  onDrop={handleDrop}
+                  className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors ${
+                    dragActive
+                      ? 'border-blue-500 bg-blue-100'
+                      : 'border-blue-300 bg-white hover:border-blue-400 hover:bg-blue-50'
+                  } ${uploadingFiles ? 'opacity-50 pointer-events-none' : ''}`}
+                >
+                  <input
+                    type="file"
+                    id="file-upload"
+                    multiple
+                    onChange={handleFileInputChange}
+                    className="hidden"
+                    disabled={uploadingFiles || !permissions.canSendMessages(userRole)}
+                  />
+                  <label
+                    htmlFor="file-upload"
+                    className="cursor-pointer flex flex-col items-center gap-2"
+                  >
+                    <svg className="w-8 h-8 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                    </svg>
+                    <span className="text-sm text-gray-700">
+                      {dragActive ? 'Отпустите файлы здесь' : 'Перетащите файлы сюда или нажмите для выбора'}
+                    </span>
+                    <span className="text-xs text-gray-500">
+                      Поддерживаются: текстовые файлы, изображения (PNG, JPEG, GIF, WebP), PDF, JSON, CSV
+                    </span>
+                  </label>
+
+                  {uploadingFiles && (
+                    <div className="mt-2 space-y-1">
+                      {Object.entries(uploadProgress).map(([fileName, progress]) => (
+                        <div key={fileName} className="text-xs">
+                          <div className="flex justify-between mb-1">
+                            <span className="truncate">{fileName}</span>
+                            <span>{progress}%</span>
+                          </div>
+                          <div className="w-full bg-gray-200 rounded-full h-1.5">
+                            <div
+                              className="bg-blue-600 h-1.5 rounded-full transition-all duration-300"
+                              style={{ width: `${progress}%` }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Список файлов (для всех комнат) - компактные чипы */}
+                {files.length > 0 && (
+                  <div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto">
+                    {files.map((file) => {
+                      // Определяем иконку по типу файла
+                      const getFileIcon = () => {
+                        if (file.file_type?.startsWith('image/')) {
+                          return (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                            </svg>
+                          )
+                        } else if (file.file_type === 'application/pdf') {
+                          return (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                            </svg>
+                          )
+                        } else if (file.file_type === 'text/csv' || file.filename.endsWith('.csv')) {
+                          return (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                          )
+                        } else {
+                          return (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                          )
+                        }
+                      }
+
+                      return (
+                        <div
+                          key={file.id}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white border border-blue-200 rounded-full hover:bg-blue-50 hover:border-blue-300 transition-colors text-xs group"
+                        >
+                          <a
+                            href={file.file_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-1.5 flex-1 min-w-0"
+                            title={`${file.filename} • ${file.file_type} • ${(file.size / 1024).toFixed(1)} KB`}
+                          >
+                            {getFileIcon()}
+                            <span className="font-medium text-gray-700 truncate max-w-[150px]">
+                              {file.filename}
+                            </span>
+                            {file.openai_file_id && (
+                              <span className="text-green-600" title="Загружен в OpenAI">
+                                ✅
+                              </span>
+                            )}
+                            <svg 
+                              className="w-3 h-3 text-gray-400 group-hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity" 
+                              fill="none" 
+                              stroke="currentColor" 
+                              viewBox="0 0 24 24"
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                            </svg>
+                          </a>
+                          {permissions.canSendMessages(userRole) && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                e.preventDefault()
+                                handleDeleteFile(file.id, file.file_url, file.openai_file_id)
+                              }}
+                              className="ml-1 p-0.5 hover:bg-red-100 rounded text-red-500 hover:text-red-700 transition-colors opacity-0 group-hover:opacity-100"
+                              title="Удалить файл"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </button>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Semantic Search Panel */}

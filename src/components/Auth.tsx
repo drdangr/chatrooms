@@ -33,15 +33,48 @@ export default function Auth() {
   }, [])
 
   const handleSignInWithGoogle = async () => {
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
-      },
-    })
-    if (error) {
-      console.error('Error signing in:', error.message)
-      alert('Ошибка входа: ' + error.message)
+    // Ensure we use the current origin, never hardcoded URLs
+    const currentOrigin = window.location.origin
+    const redirectUrl = `${currentOrigin}/auth/callback`
+    
+    console.log('=== OAuth Sign In Debug ===')
+    console.log('Current origin:', currentOrigin)
+    console.log('Redirect URL:', redirectUrl)
+    console.log('Full window.location:', window.location.href)
+    
+    // Validate that we're not on wrong domain
+    if (currentOrigin.includes('vercel.app') && process.env.NODE_ENV === 'development') {
+      console.warn('⚠️ WARNING: Running in development but on Vercel domain!')
+    }
+    
+    try {
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: redirectUrl,
+          skipBrowserRedirect: false,
+          queryParams: {
+            // Explicitly set redirect_to as query param as well
+            redirect_to: redirectUrl,
+          },
+        },
+      })
+      
+      if (error) {
+        console.error('Error signing in:', error.message)
+        alert('Ошибка входа: ' + error.message)
+      } else if (data?.url) {
+        console.log('OAuth URL generated:', data.url)
+        // Check if the URL contains our redirectTo
+        if (!data.url.includes(redirectUrl) && !data.url.includes(encodeURIComponent(redirectUrl))) {
+          console.warn('⚠️ WARNING: OAuth URL does not contain expected redirectTo!')
+          console.warn('Expected:', redirectUrl)
+          console.warn('OAuth URL:', data.url)
+        }
+      }
+    } catch (err) {
+      console.error('Exception during sign in:', err)
+      alert('Ошибка входа: ' + (err instanceof Error ? err.message : 'Неизвестная ошибка'))
     }
   }
 
