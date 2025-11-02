@@ -12,7 +12,10 @@ const AVAILABLE_MODELS = [
   { value: 'gpt-4o', label: 'GPT-4o (баланс)' },
   { value: 'gpt-4', label: 'GPT-4 (мощный)' },
   { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo (старый)' },
-  { value: 'o1-preview', label: 'O1 Preview (reasoning, мощный)' },
+  { value: 'gpt-4.5-turbo', label: 'GPT-4.5 Turbo (улучшенный)' },
+  { value: 'gpt-4.5', label: 'GPT-4.5 (новый)' },
+  { value: 'o1', label: 'O1 (reasoning, мощный)' },
+  { value: 'o1-preview', label: 'O1 Preview (reasoning, тестовая)' },
   { value: 'o1-mini', label: 'O1 Mini (reasoning, быстрый)' },
 ]
 
@@ -270,7 +273,7 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
             <p className="text-xs text-gray-500 mt-1">
               Выберите модель для генерации ответов
             </p>
-            {(selectedModel === 'o1-preview' || selectedModel === 'o1-mini') && (
+            {(selectedModel.startsWith('o1') || selectedModel === 'o1') && (
               <div className="mt-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
                 <p className="text-xs text-yellow-800 font-semibold mb-1">
                   ⚠️ Особенности моделей O1:
@@ -279,6 +282,19 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
                   <li>Модели O1 не поддерживают системные промпты напрямую</li>
                   <li>Системный промпт будет встроен в первое сообщение</li>
                   <li>Эти модели специализируются на reasoning и могут давать более детальные ответы</li>
+                  <li>Модель может быть недоступна - проверьте доступ к o1 моделям в вашем API ключе</li>
+                </ul>
+              </div>
+            )}
+            {(selectedModel.includes('4.5') || selectedModel === 'gpt-4.5' || selectedModel === 'gpt-4.5-turbo') && (
+              <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <p className="text-xs text-blue-800 font-semibold mb-1">
+                  ℹ️ О моделях GPT-4.5:
+                </p>
+                <ul className="text-xs text-blue-700 space-y-1 list-disc list-inside">
+                  <li>Модели GPT-4.5 могут требовать специального доступа через API</li>
+                  <li>Если модель недоступна, используйте GPT-4o как альтернативу</li>
+                  <li>Проверьте актуальность списка моделей в документации OpenAI</li>
                 </ul>
               </div>
             )}

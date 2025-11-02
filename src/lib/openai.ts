@@ -13,11 +13,17 @@ interface ChatCompletionResponse {
 }
 
 /**
- * Проверяет, является ли модель моделью o1 (reasoning model)
- * Модели o1 не поддерживают системные промпты и требуют особого форматирования
+ * Проверяет, является ли модель моделью o1/o3 (reasoning model)
+ * Модели o1/o3 не поддерживают системные промпты и требуют особого форматирования
+ * 
+ * ВАЖНО: Если модель недоступна, проверьте актуальные имена моделей в документации OpenAI:
+ * - Модель может называться просто 'o1' вместо 'o1-preview'
+ * - Требуется специальный доступ через API ключ
+ * - Проверьте список доступных моделей: https://platform.openai.com/docs/models
  */
 function isO1Model(model: string): boolean {
-  return model.startsWith('o1') || model.includes('o1-')
+  // Проверяем модели o1/o3 (o1, o1-preview, o1-mini, o3 и т.д.)
+  return model.startsWith('o1') || model.startsWith('o3') || model.includes('o1-') || model.includes('o3-')
 }
 
 /**
@@ -138,10 +144,20 @@ export async function callOpenAI(
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))
-      throw new Error(
-        errorData.error?.message ||
-          `OpenAI API error: ${response.status} ${response.statusText}`
-      )
+      const errorMessage = errorData.error?.message || `OpenAI API error: ${response.status} ${response.statusText}`
+      
+      // Более понятные сообщения об ошибках для недоступных моделей
+      if (errorMessage.includes('does not exist') || errorMessage.includes('not found')) {
+        throw new Error(
+          `Модель "${model}" недоступна. Возможные причины:\n` +
+          `1. Модель требует специального доступа через API ключ\n` +
+          `2. Неправильное имя модели (проверьте документацию OpenAI)\n` +
+          `3. Модель еще не опубликована для API\n\n` +
+          `Оригинальная ошибка: ${errorMessage}`
+        )
+      }
+      
+      throw new Error(errorMessage)
     }
 
     const data: ChatCompletionResponse = await response.json()
