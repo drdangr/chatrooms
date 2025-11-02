@@ -34,6 +34,13 @@ function isO1Model(model: string): boolean {
 }
 
 /**
+ * Новые модели (например, GPT-5) требуют параметра max_completion_tokens вместо max_tokens
+ */
+function usesMaxCompletionTokens(model: string): boolean {
+  return model.startsWith('gpt-5') || model.startsWith('gpt-4.1')
+}
+
+/**
  * Форматирует сообщения для моделей o1
  * Модели o1 не поддерживают системные сообщения - системный промпт встраивается в первое пользовательское сообщение
  */
@@ -133,7 +140,11 @@ export async function callOpenAI(
   // Для моделей o1 не добавляем temperature (они не поддерживают этот параметр)
   if (!isO1) {
     requestBody.temperature = 0.7
-    requestBody.max_tokens = 1000
+    if (usesMaxCompletionTokens(model)) {
+      requestBody.max_completion_tokens = 1000
+    } else {
+      requestBody.max_tokens = 1000
+    }
   } else {
     // Для моделей o1 можно указать max_tokens, но обычно это не требуется
     // Они управляют длиной ответа автоматически
