@@ -35,7 +35,7 @@ interface Room {
   is_test_room?: boolean
 }
 
-interface File {
+interface RoomFile {
   id: string
   filename: string
   file_type: string
@@ -70,7 +70,7 @@ export default function ChatRoom() {
   const [searching, setSearching] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
   const [backfilling, setBackfilling] = useState(false)
-  const [files, setFiles] = useState<File[]>([])
+  const [files, setFiles] = useState<RoomFile[]>([])
   const [assistantConfig, setAssistantConfig] = useState<{
     assistantId: string
     threadId: string
@@ -491,13 +491,15 @@ export default function ChatRoom() {
   }
 
 
-  const handleFileUpload = async (selectedFiles: FileList | File[]) => {
+  const handleFileUpload = async (selectedFiles: FileList | globalThis.File[]) => {
     if (!roomId || !user || !permissions.canSendMessages(userRole)) {
       alert('У вас нет прав для загрузки файлов')
       return
     }
 
-    const filesArray = Array.from(selectedFiles)
+    const filesArray: globalThis.File[] = selectedFiles instanceof FileList 
+      ? Array.from(selectedFiles) 
+      : selectedFiles
     if (filesArray.length === 0) return
 
     setUploadingFiles(true)

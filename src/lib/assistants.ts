@@ -549,7 +549,7 @@ export async function getOrCreateAssistantForRoom(
     // Игнорируем ошибки "нет записи" (PGRST116) и 406 (Not Acceptable при пустом результате)
     if (selectError && selectError.code !== 'PGRST116' && selectError.code !== 'PGRST301') {
       // Логируем, но не прерываем выполнение, если это просто отсутствие записи
-      if (selectError.message?.includes('Not Acceptable') || selectError.status === 406) {
+      if (selectError.message?.includes('Not Acceptable')) {
         console.warn('Supabase returned 406, treating as no existing assistant:', selectError)
       } else {
         console.warn('Error checking existing assistant (non-critical):', selectError)

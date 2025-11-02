@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { 
-  sendMessageViaAssistant, 
-  getOrCreateAssistantForRoom 
+  sendMessageViaAssistant
 } from '../lib/assistants'
 import { initializeTestAssistant } from '../lib/test-assistants'
 

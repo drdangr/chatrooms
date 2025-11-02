@@ -226,19 +226,6 @@ export async function uploadMockFilesToOpenAI(roomId: string): Promise<string[]>
     
     const uploadedFileIds: string[] = []
     
-    // Маппинг типов файлов на функции создания
-    const fileCreators: Record<string, () => Blob> = {
-      'text/plain': createTestTextFile,
-      'text/csv': createTestCSVFile,
-      'application/json': createTestJSONFile,
-      'image/png': createTestImageFile,
-      'image/svg+xml': createTestImageFile,
-    }
-    
-    // Определяем поддерживаемые типы для file_search
-    // file_search поддерживает: text, markdown, json, csv, pdf
-    // НЕ поддерживает: изображения (png, jpg, svg и т.д.)
-    const supportedForFileSearch = ['text/plain', 'text/csv', 'application/json', 'application/pdf', 'text/markdown']
     // Изображения для Vision API (поддерживаются PNG, JPEG, GIF, WebP, но НЕ SVG)
     const unsupportedImageTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/svg+xml', 'image/gif', 'image/webp']
     
@@ -400,7 +387,10 @@ export async function initializeTestAssistant(
     }
     
     // 2. Получаем настройки комнаты, если не указаны
-    if (!systemPrompt || !model) {
+    let finalSystemPrompt = systemPrompt
+    let finalModel = model
+    
+    if (!finalSystemPrompt || !finalModel) {
       const { data: room, error: roomError } = await supabase
         .from('rooms')
         .select('system_prompt, model')
@@ -411,16 +401,21 @@ export async function initializeTestAssistant(
         throw new Error(`Ошибка получения настроек комнаты: ${roomError.message}`)
       }
       
-      systemPrompt = systemPrompt || room.system_prompt || 'Вы - полезный ассистент.'
-      model = model || room.model || 'gpt-4o'
+      finalSystemPrompt = finalSystemPrompt || room.system_prompt || 'Вы - полезный ассистент.'
+      finalModel = finalModel || room.model || 'gpt-4o'
+    }
+    
+    // Гарантируем, что значения не undefined
+    if (!finalSystemPrompt || !finalModel) {
+      throw new Error('Не удалось определить system_prompt или model для Assistant')
     }
     
     // 3. Создаем или получаем Assistant
     console.log('🤖 Создание/получение Assistant...')
     const assistantConfig = await getOrCreateAssistantForRoom(
       roomId,
-      systemPrompt,
-      model,
+      finalSystemPrompt,
+      finalModel,
       fileIds
     )
     

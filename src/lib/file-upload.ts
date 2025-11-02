@@ -78,9 +78,9 @@ export function getFileType(filename: string): string {
  * @returns URL файла в Storage
  */
 export async function uploadFileToStorage(
-  file: File,
+  file: globalThis.File,
   roomId: string,
-  userId: string
+  _userId: string
 ): Promise<string> {
   try {
     // Валидация
@@ -97,7 +97,7 @@ export async function uploadFileToStorage(
     const filePath = `${roomId}/${fileName}`
 
     // Загружаем файл в Storage
-    const { data, error } = await supabase.storage
+    const { error } = await supabase.storage
       .from('files')
       .upload(filePath, file, {
         cacheControl: '3600',
