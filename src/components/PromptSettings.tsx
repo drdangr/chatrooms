@@ -15,13 +15,15 @@ interface ModelOption {
 }
 
 const DEFAULT_MODELS: ModelOption[] = [
-  { value: 'gpt-4o-mini', label: 'GPT-4o Mini (быстрый, дешевый)', verified: true },
-  { value: 'gpt-4o', label: 'GPT-4o (баланс)', verified: true },
-  { value: 'gpt-4', label: 'GPT-4 (мощный)', verified: true },
-  { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo (старый)', verified: true },
-  { value: 'gpt-4.5-turbo', label: 'GPT-4.5 Turbo (нужен доступ)', verified: false },
-  { value: 'gpt-4.5', label: 'GPT-4.5 (нужен доступ)', verified: false },
-  { value: 'o1', label: 'O1 (reasoning, мощный) ✅', verified: true },
+  { value: 'gpt-5', label: 'GPT-5 (флагман)', verified: true },
+  { value: 'gpt-5-mini', label: 'GPT-5 Mini (дешевле, быстрее)', verified: true },
+  { value: 'gpt-5-chat-latest', label: 'GPT-5 Chat Latest', verified: true },
+  { value: 'gpt-4.1', label: 'GPT-4.1 (баланс качества)', verified: true },
+  { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini (экономичный)', verified: true },
+  { value: 'gpt-4o', label: 'GPT-4o (универсальный)', verified: true },
+  { value: 'o1', label: 'O1 (reasoning, мощный)', verified: true },
+  { value: 'o1-pro', label: 'O1 Pro (reasoning, Pro)', verified: true },
+  { value: 'o3', label: 'O3 (reasoning, расширенный)', verified: true },
 ]
 
 function mergeModelOptions(base: ModelOption[], extra: ModelOption[] = []): ModelOption[] {
@@ -41,7 +43,7 @@ function mergeModelOptions(base: ModelOption[], extra: ModelOption[] = []): Mode
 
 export default function PromptSettings({ roomId, onClose }: PromptSettingsProps) {
   const [systemPrompt, setSystemPrompt] = useState('')
-  const [selectedModel, setSelectedModel] = useState('gpt-4o-mini')
+  const [selectedModel, setSelectedModel] = useState('gpt-4o')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [activeTab, setActiveTab] = useState<'settings' | 'roles'>('settings')
@@ -73,7 +75,7 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
       if (error) throw error
 
       setSystemPrompt(data.system_prompt || '')
-      setSelectedModel(data.model || 'gpt-4o-mini')
+      setSelectedModel(data.model || 'gpt-4o')
     } catch (error) {
       console.error('Error loading room:', error)
       alert('Ошибка загрузки настроек комнаты')
@@ -145,7 +147,7 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
   }
 
   const isO1ModelSelected = selectedModel?.startsWith('o1') || selectedModel?.startsWith('o3')
-  const isGpt45Selected = selectedModel?.includes('4.5')
+  const isGpt5Selected = selectedModel?.startsWith('gpt-5')
 
   const handleSave = async () => {
     if (!roomId) return
@@ -376,15 +378,15 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
                 </ul>
               </div>
             )}
-            {isGpt45Selected && (
+            {isGpt5Selected && (
               <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                 <p className="text-xs text-blue-800 font-semibold mb-1">
-                  ℹ️ Особенности моделей GPT-4.5
+                  ℹ️ Особенности моделей GPT-5
                 </p>
                 <ul className="text-xs text-blue-700 space-y-1 list-disc list-inside">
-                  <li>Нужен активированный доступ в OpenAI (часто доступно только в тарифах Pro)</li>
-                  <li>Проверьте актуальное имя модели через API (кнопка ниже)</li>
-                  <li>В случае ошибки попробуйте GPT-4o как fallback</li>
+                  <li>Могут требовать повышенный лимит или Pro-доступ в OpenAI аккаунте</li>
+                  <li>Следите за актуальными ревизиями (суффиксы с датами) через кнопку загрузки моделей</li>
+                  <li>При ошибках доступа можно переключиться на GPT-4.1 или GPT-4o</li>
                 </ul>
               </div>
             )}
