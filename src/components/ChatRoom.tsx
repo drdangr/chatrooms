@@ -74,6 +74,8 @@ export default function ChatRoom() {
   const [initializing, setInitializing] = useState(false)
   const [usingAssistantsAPI, setUsingAssistantsAPI] = useState(false)
   const [showFilesModal, setShowFilesModal] = useState(false)
+  const [openMessageMenu, setOpenMessageMenu] = useState<string | null>(null)
+  const [messageActionLoading, setMessageActionLoading] = useState(false)
 
   useEffect(() => {
     loadRoom()
@@ -432,6 +434,16 @@ export default function ChatRoom() {
       loadFiles()
     }
   }, [room?.id, room?.is_test_room])
+
+  useEffect(() => {
+    if (isSelectionMode && selectedMessages.size === 0) {
+      setIsSelectionMode(false)
+    }
+  }, [selectedMessages, isSelectionMode])
+
+  useEffect(() => {
+    setOpenMessageMenu(null)
+  }, [messages.length])
 
   const loadRoom = async () => {
     if (!roomId) return
@@ -1028,8 +1040,12 @@ export default function ChatRoom() {
       const newSet = new Set(prev)
       if (newSet.has(messageId)) {
         newSet.delete(messageId)
+        if (newSet.size === 0) {
+          setIsSelectionMode(false)
+        }
       } else {
         newSet.add(messageId)
+        setIsSelectionMode(true)
       }
       return newSet
     })
@@ -1043,21 +1059,21 @@ export default function ChatRoom() {
     }
   }
 
-  const handleDeleteSelected = async () => {
-    if (selectedMessages.size === 0) return
+  const deleteMessages = async (messageIds: string[]): Promise<boolean> => {
+    if (!roomId) return false
+    if (messageIds.length === 0) return false
 
     if (!permissions.canDeleteMessages(userRole)) {
       alert('У вас нет прав для удаления сообщений')
-      return
+      return false
     }
 
-    if (!confirm(`Удалить ${selectedMessages.size} сообщение(ий)?`)) return
+    if (!confirm(`Удалить ${messageIds.length} сообщение(ий)?`)) {
+      return false
+    }
 
     setDeleting(true)
     try {
-      const messageIds = Array.from(selectedMessages)
-      console.log('Deleting messages:', messageIds)
-      
       const { data, error } = await supabase
         .from('messages')
         .delete()
@@ -1071,20 +1087,143 @@ export default function ChatRoom() {
 
       console.log('Delete result:', data)
 
-      // Remove deleted messages from local state immediately
-      setMessages((prev) => prev.filter(m => !messageIds.includes(m.id)))
-      
+      setMessages((prev) => prev.filter((m) => !messageIds.includes(m.id)))
       setSelectedMessages(new Set())
       setIsSelectionMode(false)
-      
-      // Reload messages to ensure consistency
-      await loadMessages()
+
+      try {
+        await updateAssistantSummary(roomId)
+      } catch (summaryError) {
+        console.warn('Не удалось обновить summary после удаления сообщений:', summaryError)
+      }
+
+      return true
     } catch (error) {
       console.error('Error deleting messages:', error)
       const errorMessage = error instanceof Error ? error.message : String(error)
       alert('Ошибка при удалении сообщений: ' + errorMessage)
+      return false
     } finally {
       setDeleting(false)
+    }
+  }
+
+  const handleDeleteSelected = async () => {
+    if (selectedMessages.size === 0) return
+    const deleted = await deleteMessages(Array.from(selectedMessages))
+    if (deleted) {
+      await loadMessages()
+    }
+  }
+
+  const handleHighlightMessage = (messageId: string) => {
+    setSelectedMessages((prev) => {
+      const newSet = new Set(prev)
+      if (newSet.has(messageId)) {
+        newSet.delete(messageId)
+        if (newSet.size === 0) {
+          setIsSelectionMode(false)
+        }
+      } else {
+        newSet.add(messageId)
+        setIsSelectionMode(true)
+      }
+      return newSet
+    })
+    setOpenMessageMenu(null)
+  }
+
+  const handleSummarizeMessages = async (messageId: string) => {
+    if (!roomId || messageActionLoading) return
+
+    const ids = selectedMessages.size > 0 ? Array.from(selectedMessages) : [messageId]
+    if (!ids.includes(messageId)) {
+      ids.push(messageId)
+    }
+
+    const targetMessages = messages
+      .filter((m) => ids.includes(m.id))
+      .map((m) => {
+        const sender = (m.sender_name || 'Участник').trim()
+        const text = (m.text || '').trim()
+        return `${sender}:\n${text}`
+      })
+
+    if (targetMessages.length === 0) {
+      alert('Нет сообщений для саммаризации')
+      setOpenMessageMenu(null)
+      return
+    }
+
+    setMessageActionLoading(true)
+    setOpenMessageMenu(null)
+    try {
+      const combinedText = targetMessages
+        .join('\n\n')
+
+      const summaryInstruction = `Ты выступаешь как ассистент, который кратко пересказывает сообщения участников. Сожми несущественные детали, сохрани важные факты, решения и контекст. Ответ дай на русском языке.`
+
+      const summary = await callOpenAI(
+        summaryInstruction,
+        [
+          {
+            sender_name: 'Диалог',
+            text: combinedText,
+          },
+        ],
+        'gpt-4o-mini',
+        0.2
+      )
+
+      const summaryMessageText = `Суммаризация (${targetMessages.length} сообщение(й)):\n${summary}`
+
+      const { data: summaryMessage, error: summaryError } = await supabase
+        .from('messages')
+        .insert({
+          room_id: roomId,
+          sender_id: null,
+          sender_name: 'Система',
+          text: summaryMessageText,
+        })
+        .select()
+        .single()
+
+      if (summaryError) {
+        throw summaryError
+      }
+
+      if (summaryMessage?.id) {
+        import('../lib/semantic-search').then(({ generateAndStoreEmbedding }) => {
+          generateAndStoreEmbedding(summaryMessage.id, summaryMessageText).catch((err) => {
+            console.warn('Failed to generate embedding for summary message (non-critical):', err)
+          })
+        })
+      }
+
+      try {
+        await updateAssistantSummary(roomId)
+      } catch (summaryUpdateError) {
+        console.warn('Не удалось обновить summary после саммаризации:', summaryUpdateError)
+      }
+
+      setSelectedMessages(new Set())
+      setIsSelectionMode(false)
+      setTimeout(() => scrollToBottom(), 200)
+    } catch (error) {
+      console.error('Error summarizing messages:', error)
+      alert('Не удалось создать саммари: ' + (error as Error).message)
+    } finally {
+      setMessageActionLoading(false)
+    }
+  }
+
+  const handleDeleteMessageFromMenu = async (messageId: string) => {
+    const ids = new Set(selectedMessages)
+    ids.add(messageId)
+    setOpenMessageMenu(null)
+    const deleted = await deleteMessages(Array.from(ids))
+    if (deleted) {
+      await loadMessages()
     }
   }
 
@@ -1446,106 +1585,148 @@ export default function ChatRoom() {
                       className="mt-2 w-5 h-5 cursor-pointer"
                     />
                   )}
-                  <div
-                    className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
-                      isUser
-                        ? 'bg-blue-500 text-white'
-                        : isLLM
-                        ? 'bg-green-500 text-white'
-                        : isSystem
-                        ? 'bg-yellow-500 text-white'
-                        : 'bg-gray-200 text-gray-800'
-                    } ${isSelected ? 'ring-2 ring-red-500 ring-offset-2' : ''}`}
-                  >
-                    <div className="text-sm font-semibold mb-1">
-                      {message.sender_name}
-                    </div>
-                    <div className={`text-sm markdown-content ${isUser || isLLM || isSystem ? 'markdown-content-light' : 'markdown-content-dark'}`}>
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        components={{
-                          // Custom styling for code blocks
-                          pre: ({ children, ...props }: any) => {
-                            return (
-                              <pre className="rounded p-2 my-2 overflow-x-auto" {...props}>
-                                {children}
-                              </pre>
-                            )
-                          },
-                          code: ({ className, children, ...props }: any) => {
-                            const isInline = !className || !className.includes('language-')
-                            return isInline ? (
-                              <code className="rounded px-1 py-0.5 font-mono text-xs" {...props}>
-                                {children}
-                              </code>
-                            ) : (
-                              <code className={className} {...props}>
-                                {children}
-                              </code>
-                            )
-                          },
-                          // Custom styling for links
-                          a: ({ ...props }) => (
-                            <a
-                              {...props}
-                              className="underline hover:opacity-80"
-                              target="_blank"
-                              rel="noopener noreferrer"
-                            />
-                          ),
-                          // Custom styling for lists
-                          ul: ({ ...props }) => (
-                            <ul className="list-disc list-inside my-1 space-y-1" {...props} />
-                          ),
-                          ol: ({ ...props }) => (
-                            <ol className="list-decimal list-inside my-1 space-y-1" {...props} />
-                          ),
-                          // Custom styling for blockquotes
-                          blockquote: ({ ...props }) => (
-                            <blockquote className="border-l-4 border-opacity-50 pl-2 my-2 italic" {...props} />
-                          ),
-                          // Custom styling for headings
-                          h1: ({ ...props }) => (
-                            <h1 className="text-lg font-bold my-2" {...props} />
-                          ),
-                          h2: ({ ...props }) => (
-                            <h2 className="text-base font-bold my-2" {...props} />
-                          ),
-                          h3: ({ ...props }) => (
-                            <h3 className="text-sm font-bold my-1" {...props} />
-                          ),
-                          // Custom styling for paragraphs
-                          p: ({ ...props }) => (
-                            <p className="my-1" {...props} />
-                          ),
-                          // Custom styling for tables
-                          table: ({ ...props }) => (
-                            <div className="overflow-x-auto my-2">
-                              <table className="border-collapse border border-opacity-30" {...props} />
-                            </div>
-                          ),
-                          th: ({ ...props }) => (
-                            <th className="border border-opacity-30 px-2 py-1 font-semibold" {...props} />
-                          ),
-                          td: ({ ...props }) => (
-                            <td className="border border-opacity-30 px-2 py-1" {...props} />
-                          ),
+                  <div className="flex items-start gap-2">
+                    <div className={`relative flex-shrink-0 ${isUser ? 'order-1' : 'order-2'}`}>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setOpenMessageMenu((prev) => (prev === message.id ? null : message.id))
                         }}
+                        disabled={messageActionLoading || deleting}
+                        className={`p-1 rounded-full transition-colors ${openMessageMenu === message.id ? 'bg-gray-300 text-gray-900' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-200'} disabled:cursor-not-allowed disabled:opacity-50`}
+                        title="Действия"
                       >
-                        {message.text}
-                      </ReactMarkdown>
+                        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                          <path d="M10 4a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm0 12a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm0-6a1.5 1.5 0 110-3 1.5 1.5 0 010 3z" />
+                        </svg>
+                      </button>
+                      {openMessageMenu === message.id && (
+                        <div
+                          className={`absolute top-1/2 -translate-y-1/2 w-44 bg-white border border-gray-200 shadow-lg rounded-md py-1 z-30 flex flex-col ${isUser ? 'right-full mr-2' : 'left-full ml-2'}`}
+                          onClick={(e) => e.stopPropagation()}
+                          onMouseLeave={() => setOpenMessageMenu(null)}
+                        >
+                          <button
+                            type="button"
+                            className="px-3 py-1.5 text-sm text-left text-gray-700 hover:bg-gray-100"
+                            onClick={() => handleHighlightMessage(message.id)}
+                          >
+                            Выделить
+                          </button>
+                          <button
+                            type="button"
+                            className="px-3 py-1.5 text-sm text-left text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                            onClick={() => handleSummarizeMessages(message.id)}
+                            disabled={messageActionLoading}
+                          >
+                            Саммаризировать
+                          </button>
+                          <button
+                            type="button"
+                            className="px-3 py-1.5 text-sm text-left text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                            onClick={() => handleDeleteMessageFromMenu(message.id)}
+                            disabled={messageActionLoading || deleting || !permissions.canDeleteMessages(userRole)}
+                          >
+                            Удалить
+                          </button>
+                        </div>
+                      )}
                     </div>
-                    <div
-                      className={`text-xs mt-1 ${
-                        isUser || isLLM || isSystem
-                          ? 'text-opacity-75'
-                          : 'text-gray-500'
-                      }`}
-                    >
-                      {new Date(message.timestamp).toLocaleTimeString('ru-RU', {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
+                    <div className={`${isUser ? 'order-2' : 'order-1'}`}>
+                      <div
+                        className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
+                          isUser
+                            ? 'bg-blue-500 text-white'
+                            : isLLM
+                            ? 'bg-green-500 text-white'
+                            : isSystem
+                            ? 'bg-yellow-500 text-white'
+                            : 'bg-gray-200 text-gray-800'
+                        } ${isSelected ? 'ring-2 ring-red-500 ring-offset-2' : ''}`}
+                      >
+                        <div className="text-sm font-semibold mb-1">
+                          {message.sender_name}
+                        </div>
+                        <div className={`text-sm markdown-content ${isUser || isLLM || isSystem ? 'markdown-content-light' : 'markdown-content-dark'}`}>
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              pre: ({ children, ...props }: any) => (
+                                <pre className="rounded p-2 my-2 overflow-x-auto" {...props}>
+                                  {children}
+                                </pre>
+                              ),
+                              code: ({ className, children, ...props }: any) => {
+                                const isInline = !className || !className.includes('language-')
+                                return isInline ? (
+                                  <code className="rounded px-1 py-0.5 font-mono text-xs" {...props}>
+                                    {children}
+                                  </code>
+                                ) : (
+                                  <code className={className} {...props}>
+                                    {children}
+                                  </code>
+                                )
+                              },
+                              a: ({ ...props }) => (
+                                <a
+                                  {...props}
+                                  className="underline hover:opacity-80"
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                />
+                              ),
+                              ul: ({ ...props }) => (
+                                <ul className="list-disc list-inside my-1 space-y-1" {...props} />
+                              ),
+                              ol: ({ ...props }) => (
+                                <ol className="list-decimal list-inside my-1 space-y-1" {...props} />
+                              ),
+                              blockquote: ({ ...props }) => (
+                                <blockquote className="border-l-4 border-opacity-50 pl-2 my-2 italic" {...props} />
+                              ),
+                              h1: ({ ...props }) => (
+                                <h1 className="text-lg font-bold my-2" {...props} />
+                              ),
+                              h2: ({ ...props }) => (
+                                <h2 className="text-base font-bold my-2" {...props} />
+                              ),
+                              h3: ({ ...props }) => (
+                                <h3 className="text-sm font-bold my-1" {...props} />
+                              ),
+                              p: ({ ...props }) => (
+                                <p className="my-1" {...props} />
+                              ),
+                              table: ({ ...props }) => (
+                                <div className="overflow-x-auto my-2">
+                                  <table className="border-collapse border border-opacity-30" {...props} />
+                                </div>
+                              ),
+                              th: ({ ...props }) => (
+                                <th className="border border-opacity-30 px-2 py-1 font-semibold" {...props} />
+                              ),
+                              td: ({ ...props }) => (
+                                <td className="border border-opacity-30 px-2 py-1" {...props} />
+                              ),
+                            }}
+                          >
+                            {message.text}
+                          </ReactMarkdown>
+                        </div>
+                        <div
+                          className={`text-xs mt-1 ${
+                            isUser || isLLM || isSystem
+                              ? 'text-opacity-75'
+                              : 'text-gray-500'
+                          }`}
+                        >
+                          {new Date(message.timestamp).toLocaleTimeString('ru-RU', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
