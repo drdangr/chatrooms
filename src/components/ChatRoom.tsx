@@ -7,6 +7,8 @@ import { getUserRoleInRoom, permissions, Role } from '../lib/roles'
 import UserChip from './UserChip'
 import { searchMessagesSemantic } from '../lib/semantic-search'
 import type { SearchResult } from '../lib/semantic-search'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 interface Message {
   id: string
@@ -1079,7 +1081,81 @@ export default function ChatRoom() {
                     <div className="text-sm font-semibold mb-1">
                       {message.sender_name}
                     </div>
-                    <div className="text-sm">{message.text}</div>
+                    <div className={`text-sm markdown-content ${isUser || isLLM || isSystem ? 'markdown-content-light' : 'markdown-content-dark'}`}>
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                          // Custom styling for code blocks
+                          pre: ({ children, ...props }: any) => {
+                            return (
+                              <pre className="rounded p-2 my-2 overflow-x-auto" {...props}>
+                                {children}
+                              </pre>
+                            )
+                          },
+                          code: ({ className, children, ...props }: any) => {
+                            const isInline = !className || !className.includes('language-')
+                            return isInline ? (
+                              <code className="rounded px-1 py-0.5 font-mono text-xs" {...props}>
+                                {children}
+                              </code>
+                            ) : (
+                              <code className={className} {...props}>
+                                {children}
+                              </code>
+                            )
+                          },
+                          // Custom styling for links
+                          a: ({ ...props }) => (
+                            <a
+                              {...props}
+                              className="underline hover:opacity-80"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            />
+                          ),
+                          // Custom styling for lists
+                          ul: ({ ...props }) => (
+                            <ul className="list-disc list-inside my-1 space-y-1" {...props} />
+                          ),
+                          ol: ({ ...props }) => (
+                            <ol className="list-decimal list-inside my-1 space-y-1" {...props} />
+                          ),
+                          // Custom styling for blockquotes
+                          blockquote: ({ ...props }) => (
+                            <blockquote className="border-l-4 border-opacity-50 pl-2 my-2 italic" {...props} />
+                          ),
+                          // Custom styling for headings
+                          h1: ({ ...props }) => (
+                            <h1 className="text-lg font-bold my-2" {...props} />
+                          ),
+                          h2: ({ ...props }) => (
+                            <h2 className="text-base font-bold my-2" {...props} />
+                          ),
+                          h3: ({ ...props }) => (
+                            <h3 className="text-sm font-bold my-1" {...props} />
+                          ),
+                          // Custom styling for paragraphs
+                          p: ({ ...props }) => (
+                            <p className="my-1" {...props} />
+                          ),
+                          // Custom styling for tables
+                          table: ({ ...props }) => (
+                            <div className="overflow-x-auto my-2">
+                              <table className="border-collapse border border-opacity-30" {...props} />
+                            </div>
+                          ),
+                          th: ({ ...props }) => (
+                            <th className="border border-opacity-30 px-2 py-1 font-semibold" {...props} />
+                          ),
+                          td: ({ ...props }) => (
+                            <td className="border border-opacity-30 px-2 py-1" {...props} />
+                          ),
+                        }}
+                      >
+                        {message.text}
+                      </ReactMarkdown>
+                    </div>
                     <div
                       className={`text-xs mt-1 ${
                         isUser || isLLM || isSystem

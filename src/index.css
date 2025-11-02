@@ -16,3 +16,125 @@ code {
     monospace;
 }
 
+/* Markdown content styles */
+.markdown-content {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.markdown-content-light {
+  /* Styles for light text on dark backgrounds (user, LLM, system messages) */
+}
+
+.markdown-content-light pre {
+  background-color: rgba(0, 0, 0, 0.3);
+  color: inherit;
+}
+
+.markdown-content-light code {
+  background-color: rgba(0, 0, 0, 0.3);
+  color: inherit;
+}
+
+.markdown-content-light a {
+  color: rgba(255, 255, 255, 0.9);
+  text-decoration: underline;
+}
+
+.markdown-content-light blockquote {
+  border-left-color: rgba(255, 255, 255, 0.5);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.markdown-content-light table {
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.markdown-content-light th,
+.markdown-content-light td {
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.markdown-content-dark {
+  /* Styles for dark text on light backgrounds */
+}
+
+.markdown-content-dark pre {
+  background-color: rgba(0, 0, 0, 0.1);
+  color: #1f2937;
+}
+
+.markdown-content-dark code {
+  background-color: rgba(0, 0, 0, 0.1);
+  color: #1f2937;
+}
+
+.markdown-content-dark a {
+  color: #2563eb;
+  text-decoration: underline;
+}
+
+.markdown-content-dark a:hover {
+  color: #1d4ed8;
+}
+
+.markdown-content-dark blockquote {
+  border-left-color: rgba(0, 0, 0, 0.2);
+  color: #4b5563;
+}
+
+.markdown-content-dark table {
+  border-color: rgba(0, 0, 0, 0.2);
+}
+
+.markdown-content-dark th,
+.markdown-content-dark td {
+  border-color: rgba(0, 0, 0, 0.2);
+}
+
+/* Ensure markdown content doesn't overflow */
+.markdown-content p {
+  margin: 0.5rem 0;
+}
+
+.markdown-content p:first-child {
+  margin-top: 0;
+}
+
+.markdown-content p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+  margin-top: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.markdown-content h1:first-child,
+.markdown-content h2:first-child,
+.markdown-content h3:first-child {
+  margin-top: 0;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  margin: 0.5rem 0;
+  padding-left: 1.5rem;
+}
+
+.markdown-content li {
+  margin: 0.25rem 0;
+}
+
+.markdown-content hr {
+  margin: 1rem 0;
+  border: none;
+  border-top: 1px solid currentColor;
+  opacity: 0.3;
+}
+
