@@ -41,6 +41,22 @@ function usesMaxCompletionTokens(model: string): boolean {
 }
 
 /**
+ * Некоторые модели (например, GPT-5) не поддерживают настройку temperature
+ */
+function supportsCustomTemperature(model: string, isO1: boolean): boolean {
+  if (isO1) return false
+  return !model.startsWith('gpt-5')
+}
+
+function sanitizeTemperature(temp?: number): number {
+  if (typeof temp !== 'number' || Number.isNaN(temp)) {
+    return 0.7
+  }
+
+  return Math.min(2, Math.max(0, temp))
+}
+
+/**
  * Форматирует сообщения для моделей o1
  * Модели o1 не поддерживают системные сообщения - системный промпт встраивается в первое пользовательское сообщение
  */
@@ -107,7 +123,8 @@ function formatMessagesForStandard(
 export async function callOpenAI(
   systemPrompt: string,
   messages: Array<{ sender_name: string; text: string }>,
-  model: string = 'gpt-4o-mini'
+  model: string = 'gpt-4o-mini',
+  temperature?: number
 ): Promise<string> {
   const apiKey = import.meta.env.VITE_OPENAI_API_KEY
 
@@ -116,6 +133,8 @@ export async function callOpenAI(
   }
 
   const isO1 = isO1Model(model)
+  const supportsTemperature = supportsCustomTemperature(model, isO1)
+  const sanitizedTemperature = sanitizeTemperature(temperature)
   
   // Форматируем сообщения в зависимости от модели
   const formattedMessages = isO1
@@ -129,6 +148,7 @@ export async function callOpenAI(
     messagesCount: formattedMessages.length,
     firstMessagePreview: formattedMessages[0]?.content?.substring(0, 100),
     hasSystemPrompt: !isO1 && formattedMessages[0]?.role === 'system',
+    temperature: supportsTemperature ? sanitizedTemperature : 'default',
   })
 
   // Параметры запроса - модели o1 не поддерживают temperature
@@ -139,7 +159,9 @@ export async function callOpenAI(
 
   // Для моделей o1 не добавляем temperature (они не поддерживают этот параметр)
   if (!isO1) {
-    requestBody.temperature = 0.7
+    if (supportsTemperature) {
+      requestBody.temperature = sanitizedTemperature
+    }
     if (usesMaxCompletionTokens(model)) {
       requestBody.max_completion_tokens = 1000
     } else {

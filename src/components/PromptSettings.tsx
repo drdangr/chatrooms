@@ -44,6 +44,7 @@ function mergeModelOptions(base: ModelOption[], extra: ModelOption[] = []): Mode
 export default function PromptSettings({ roomId, onClose }: PromptSettingsProps) {
   const [systemPrompt, setSystemPrompt] = useState('')
   const [selectedModel, setSelectedModel] = useState('gpt-4o')
+  const [temperature, setTemperature] = useState<number>(1)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [activeTab, setActiveTab] = useState<'settings' | 'roles'>('settings')
@@ -76,6 +77,7 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
 
       setSystemPrompt(data.system_prompt || '')
       setSelectedModel(data.model || 'gpt-4o')
+      setTemperature(typeof data.temperature === 'number' ? data.temperature : 1)
     } catch (error) {
       console.error('Error loading room:', error)
       alert('Ошибка загрузки настроек комнаты')
@@ -146,8 +148,27 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
     })
   }
 
+  const clampTemperature = (value: number) => Math.min(2, Math.max(0, value))
+
+  const handleTemperatureChange = (value: number) => {
+    if (!isTemperatureEditable) return
+    if (Number.isNaN(value)) return
+    setTemperature(clampTemperature(Number(value.toFixed(2))))
+  }
+
+  const handleTemperatureInput = (value: string) => {
+    if (!isTemperatureEditable) return
+    const parsed = parseFloat(value)
+    if (Number.isNaN(parsed)) {
+      return
+    }
+    handleTemperatureChange(parsed)
+  }
+
   const isO1ModelSelected = selectedModel?.startsWith('o1') || selectedModel?.startsWith('o3')
   const isGpt5Selected = selectedModel?.startsWith('gpt-5')
+  const isTemperatureEditable = !isO1ModelSelected && !isGpt5Selected
+  const effectiveTemperature = isGpt5Selected ? 1 : temperature
 
   const handleSave = async () => {
     if (!roomId) return
@@ -165,6 +186,7 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
         userId: user.id,
         systemPrompt: systemPrompt.trim(),
         model: selectedModel,
+        temperature: temperature,
       })
 
       // First, check if user can update this room
@@ -188,10 +210,13 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
         console.log('⚠️ User did not create room, but will try to update (RLS may allow)')
       }
 
+      const temperatureToSave = isGpt5Selected ? 1 : clampTemperature(temperature)
+
       // Perform the update with explicit error handling
       const updateData = {
         system_prompt: systemPrompt.trim(),
         model: selectedModel,
+        temperature: temperatureToSave,
         updated_at: new Date().toISOString(),
       }
 
@@ -232,6 +257,7 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
         roomId,
         systemPrompt: systemPrompt.trim(),
         model: selectedModel,
+        temperature: temperatureToSave,
         timestamp: new Date().toISOString(),
         updateResult: updateResult?.[0],
       })
@@ -239,7 +265,7 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
       // Verify the save by reading back
       const { data: savedRoom, error: verifyError } = await supabase
         .from('rooms')
-        .select('system_prompt, model, updated_at, created_by')
+        .select('system_prompt, model, temperature, updated_at, created_by')
         .eq('id', roomId)
         .single()
 
@@ -251,6 +277,8 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
           saved: savedRoom.system_prompt,
           expected: systemPrompt.trim(),
           match: savedRoom.system_prompt === systemPrompt.trim(),
+          savedTemperature: savedRoom.temperature,
+          expectedTemperature: temperatureToSave,
         })
         
         if (savedRoom.system_prompt !== systemPrompt.trim()) {
@@ -267,7 +295,7 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
       // CRITICAL: Verify one more time before closing
       const { data: finalCheck } = await supabase
         .from('rooms')
-        .select('system_prompt, model')
+        .select('system_prompt, model, temperature')
         .eq('id', roomId)
         .single()
 
@@ -275,12 +303,21 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
         expected: systemPrompt.trim(),
         actual: finalCheck?.system_prompt,
         matches: finalCheck?.system_prompt === systemPrompt.trim(),
+        expectedTemperature: temperatureToSave,
+        actualTemperature: finalCheck?.temperature,
       })
 
       if (finalCheck?.system_prompt !== systemPrompt.trim()) {
         console.error('❌ CRITICAL: Prompt mismatch detected before closing modal!')
         console.error('❌ This suggests the update was rolled back or overwritten')
         alert(`Ошибка: промпт не сохранился! Ожидалось: "${systemPrompt.trim()}", получено: "${finalCheck?.system_prompt}"`)
+        setSaving(false)
+        return
+      }
+
+      if (finalCheck?.temperature !== temperatureToSave) {
+        console.error('❌ CRITICAL: Temperature mismatch detected before closing modal!')
+        alert(`Ошибка: температура не сохранилась! Ожидалось: ${temperatureToSave}, получено: ${finalCheck?.temperature}`)
         setSaving(false)
         return
       }
@@ -366,6 +403,40 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
             <p className="text-xs text-gray-500 mt-1">
               Выберите модель для генерации ответов
             </p>
+            <div className="mt-4">
+              <label className="block text-xs font-semibold text-gray-600 mb-1">
+                Температура (0.0 – 2.0)
+              </label>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <input
+                  type="range"
+                  min="0"
+                  max="2"
+                  step="0.05"
+                  value={effectiveTemperature}
+                  onChange={(e) => handleTemperatureInput(e.target.value)}
+                  disabled={!isTemperatureEditable}
+                  className="flex-1"
+                />
+                <input
+                  type="number"
+                  min="0"
+                  max="2"
+                  step="0.05"
+                  value={effectiveTemperature.toFixed(2)}
+                  onChange={(e) => handleTemperatureInput(e.target.value)}
+                  disabled={!isTemperatureEditable}
+                  className="w-24 px-3 py-1.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm text-right"
+                />
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                {isO1ModelSelected
+                  ? 'Модели O1/O3 игнорируют температуру — ответ формируется автоматически.'
+                  : isGpt5Selected
+                  ? 'GPT-5 использует фиксированную температуру 1. Настройка недоступна.'
+                  : 'Низкие значения делают ответы последовательными, высокие — более творческими.'}
+              </p>
+            </div>
             {isO1ModelSelected && (
               <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-lg">
                 <p className="text-xs text-green-800 font-semibold mb-1">

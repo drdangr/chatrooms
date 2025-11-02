@@ -26,6 +26,7 @@ interface Room {
   created_by: string
   created_at: string
   updated_at?: string
+  temperature?: number
 }
 
 export default function ChatRoom() {
@@ -130,6 +131,9 @@ export default function ChatRoom() {
                 ...prevRoom,
                 system_prompt: payload.new.system_prompt ?? prevRoom.system_prompt,
                 model: payload.new.model ?? prevRoom.model,
+                temperature: typeof payload.new.temperature === 'number'
+                  ? payload.new.temperature
+                  : prevRoom.temperature,
                 updated_at: payload.new.updated_at,
               }
               
@@ -138,8 +142,11 @@ export default function ChatRoom() {
                 newPrompt: updated.system_prompt,
                 oldModel: prevRoom.model,
                 newModel: updated.model,
+                oldTemperature: prevRoom.temperature,
+                newTemperature: updated.temperature,
                 promptChanged: prevRoom.system_prompt !== updated.system_prompt,
                 modelChanged: prevRoom.model !== updated.model,
+                temperatureChanged: prevRoom.temperature !== updated.temperature,
                 timestamp: payload.new.updated_at,
               })
               
@@ -348,6 +355,7 @@ export default function ChatRoom() {
         title: data.title,
         system_prompt: data.system_prompt,
         model: data.model,
+        temperature: data.temperature,
         updated_at: data.updated_at,
         timestamp: new Date().toISOString(),
       })
@@ -362,7 +370,10 @@ export default function ChatRoom() {
         })
       }
       
-      setRoom(data)
+      setRoom({
+        ...data,
+        temperature: typeof data.temperature === 'number' ? data.temperature : 1,
+      })
     } catch (error) {
       console.error('Error loading room:', error)
       alert('Комната не найдена')
@@ -441,6 +452,7 @@ export default function ChatRoom() {
       console.log('📋 Current room settings:', {
         system_prompt: currentRoom?.system_prompt,
         model: currentRoom?.model,
+        temperature: currentRoom?.temperature,
         roomId,
       })
 
@@ -463,19 +475,22 @@ export default function ChatRoom() {
         try {
           const systemPrompt = currentRoom.system_prompt?.trim() || 'Вы - полезный ассистент.'
           const model = currentRoom.model || 'gpt-4o-mini'
+          const temperature = typeof currentRoom.temperature === 'number' ? currentRoom.temperature : undefined
           
           console.log('🤖 Calling LLM with:', {
             prompt: systemPrompt,
             promptLength: systemPrompt.length,
             model: model,
             messagesCount: messagesForContext.length,
+            temperature,
           })
           
           // Get LLM response
           const llmResponse = await callOpenAI(
             systemPrompt,
             messagesForContext,
-            model
+            model,
+            temperature
           )
 
           // Save LLM response
