@@ -12,6 +12,8 @@ const AVAILABLE_MODELS = [
   { value: 'gpt-4o', label: 'GPT-4o (баланс)' },
   { value: 'gpt-4', label: 'GPT-4 (мощный)' },
   { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo (старый)' },
+  { value: 'o1-preview', label: 'O1 Preview (reasoning, мощный)' },
+  { value: 'o1-mini', label: 'O1 Mini (reasoning, быстрый)' },
 ]
 
 export default function PromptSettings({ roomId, onClose }: PromptSettingsProps) {
@@ -268,6 +270,18 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
             <p className="text-xs text-gray-500 mt-1">
               Выберите модель для генерации ответов
             </p>
+            {(selectedModel === 'o1-preview' || selectedModel === 'o1-mini') && (
+              <div className="mt-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                <p className="text-xs text-yellow-800 font-semibold mb-1">
+                  ⚠️ Особенности моделей O1:
+                </p>
+                <ul className="text-xs text-yellow-700 space-y-1 list-disc list-inside">
+                  <li>Модели O1 не поддерживают системные промпты напрямую</li>
+                  <li>Системный промпт будет встроен в первое сообщение</li>
+                  <li>Эти модели специализируются на reasoning и могут давать более детальные ответы</li>
+                </ul>
+              </div>
+            )}
           </div>
 
           {/* System Prompt */}
