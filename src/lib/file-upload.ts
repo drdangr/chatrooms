@@ -217,12 +217,35 @@ export async function uploadFile(
     let openaiFileId: string | undefined
     if (uploadToOpenAI) {
       try {
-        console.log('📤 Загрузка файла в OpenAI...')
+        console.log(`📤 Загрузка файла "${file.name}" (${file.type}, ${(file.size / 1024).toFixed(1)} KB) в OpenAI...`)
         openaiFileId = await uploadFileToOpenAIFromBlob(file)
-        console.log(`✅ Файл загружен в OpenAI, ID: ${openaiFileId}`)
+        console.log(`✅ Файл "${file.name}" успешно загружен в OpenAI, file_id: ${openaiFileId}`)
+        
+        // Проверяем, что файл действительно загружен и доступен
+        try {
+          const checkResponse = await fetch(`https://api.openai.com/v1/files/${openaiFileId}`, {
+            headers: {
+              'Authorization': `Bearer ${import.meta.env.VITE_OPENAI_API_KEY}`,
+            },
+          })
+          if (checkResponse.ok) {
+            const fileInfo = await checkResponse.json()
+            console.log(`✅ Проверка файла в OpenAI:`, {
+              id: fileInfo.id,
+              purpose: fileInfo.purpose,
+              filename: fileInfo.filename,
+              status: fileInfo.status
+            })
+          } else {
+            console.warn(`⚠️  Файл ${openaiFileId} не прошел проверку доступности`)
+          }
+        } catch (checkError) {
+          console.warn('⚠️  Не удалось проверить файл в OpenAI:', checkError)
+        }
       } catch (openaiError) {
-        console.warn('⚠️ Не удалось загрузить файл в OpenAI:', openaiError)
-        // Продолжаем, даже если загрузка в OpenAI не удалась
+        console.error('❌ Ошибка загрузки файла в OpenAI:', openaiError)
+        // НЕ продолжаем - если файл нужен для Assistants API, ошибка критична
+        throw new Error(`Не удалось загрузить файл "${file.name}" в OpenAI: ${(openaiError as Error).message}`)
       }
     }
 

@@ -37,6 +37,90 @@ function getAssistantsHeaders(): HeadersInit {
 }
 
 /**
+ * Проверяет, существует ли файл в OpenAI и доступен ли он для использования
+ * @param fileId - OpenAI file ID
+ * @returns информация о файле: существует ли он и имеет ли правильный purpose
+ */
+async function verifyFileExists(fileId: string): Promise<{ 
+  exists: boolean; 
+  valid: boolean;
+  purpose?: string; 
+  error?: string 
+}> {
+  try {
+    const response = await fetch(`https://api.openai.com/v1/files/${fileId}`, {
+      headers: getAssistantsHeaders(),
+    })
+    
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      return {
+        exists: false,
+        valid: false,
+        error: errorData.error?.message || `HTTP ${response.status}`
+      }
+    }
+    
+    const fileData = await response.json()
+    const hasValidPurpose = fileData.purpose === 'assistants'
+    
+    return {
+      exists: true,
+      valid: hasValidPurpose,
+      purpose: fileData.purpose
+    }
+  } catch (error) {
+    return {
+      exists: false,
+      valid: false,
+      error: (error as Error).message
+    }
+  }
+}
+
+/**
+ * Проверяет массив файлов и возвращает только валидные
+ * @param fileIds - массив OpenAI file IDs
+ * @returns массив валидных file IDs
+ */
+async function filterValidFiles(fileIds: string[]): Promise<{
+  valid: string[];
+  invalid: Array<{ fileId: string; reason: string }>;
+}> {
+  if (fileIds.length === 0) {
+    return { valid: [], invalid: [] }
+  }
+
+  const checks = await Promise.all(
+    fileIds.map(async (fileId) => {
+      const check = await verifyFileExists(fileId)
+      return { fileId, check }
+    })
+  )
+
+  const valid: string[] = []
+  const invalid: Array<{ fileId: string; reason: string }> = []
+
+  for (const { fileId, check } of checks) {
+    if (!check.exists) {
+      invalid.push({
+        fileId,
+        reason: check.error || 'Файл не найден в OpenAI'
+      })
+    } else if (!check.valid) {
+      invalid.push({
+        fileId,
+        reason: `Неправильный purpose: ${check.purpose} (должен быть 'assistants')`
+      })
+    } else {
+      valid.push(fileId)
+    }
+  }
+
+  return { valid, invalid }
+}
+
+/**
  * Загружает файл в OpenAI для использования в Assistant
  * @param fileBuffer - содержимое файла
  * @param fileName - имя файла
@@ -52,13 +136,21 @@ export async function uploadFileToOpenAI(
     // Создаем FormData для загрузки файла
     const formData = new FormData()
     const blob = new Blob([fileBuffer])
-    formData.append('file', blob, fileName)
+    
+    // Важно: создаем File объект из Blob для правильной передачи метаданных
+    // File наследуется от Blob и содержит имя файла
+    const file = new File([blob], fileName, { type: blob.type || 'application/octet-stream' })
+    
+    formData.append('file', file)
     formData.append('purpose', 'assistants')  // Важно для Assistants API
+    
+    console.log(`📤 Загрузка файла "${fileName}" (${(fileBuffer.byteLength / 1024).toFixed(1)} KB) в OpenAI...`)
     
     const response = await fetch('https://api.openai.com/v1/files', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
+        // НЕ добавляем Content-Type - браузер установит его автоматически с boundary для FormData
       },
       body: formData,
     })
@@ -66,10 +158,19 @@ export async function uploadFileToOpenAI(
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))
       const errorMessage = errorData.error?.message || `OpenAI API error: ${response.status} ${response.statusText}`
+      console.error(`❌ Ошибка загрузки файла "${fileName}":`, errorMessage)
       throw new Error(`Ошибка загрузки файла в OpenAI: ${errorMessage}`)
     }
     
     const fileData = await response.json()
+    console.log(`✅ Файл "${fileName}" загружен в OpenAI:`, {
+      id: fileData.id,
+      purpose: fileData.purpose,
+      filename: fileData.filename,
+      bytes: fileData.bytes,
+      status: fileData.status
+    })
+    
     return fileData.id
   } catch (error) {
     console.error('Error uploading file to OpenAI:', error)
@@ -105,10 +206,15 @@ export async function createAssistant(
     }
     
     // Если есть файлы и есть инструмент file_search, создаем vector store
+    // ВАЖНО: file_search НЕ поддерживает изображения - только текстовые файлы!
+    // Изображения передаются напрямую в сообщениях через Vision API
     let vectorStoreId: string | null = null
     if (fileIds.length > 0 && tools.some(t => t.type === 'file_search')) {
       try {
-        console.log(`📦 Creating vector store with ${fileIds.length} files:`, fileIds)
+        // Фильтруем файлы: file_search работает только с текстовыми файлами
+        // Проверяем, что файлы не являются изображениями (дополнительная проверка)
+        console.log(`📦 Подготовка к созданию vector store с ${fileIds.length} файлами для file_search...`)
+        console.log(`📦 ВАЖНО: file_search поддерживает только текстовые файлы (text, json, csv, pdf, markdown), не изображения!`)
         
         // Создаем vector store с файлами
         const vectorStoreResponse = await fetch('https://api.openai.com/v1/vector_stores', {
@@ -116,7 +222,7 @@ export async function createAssistant(
           headers: getAssistantsHeaders(),
           body: JSON.stringify({
             name: `Vector store for room`,
-            file_ids: fileIds,
+            file_ids: fileIds, // Эти файлы уже должны быть отфильтрованы от изображений
           }),
         })
         
@@ -275,6 +381,31 @@ export async function createMessageAndRun(
   imageFileIds: string[] = []
 ): Promise<string> {
   try {
+    // Проверяем валидность файлов перед использованием
+    if (imageFileIds.length > 0) {
+      console.log(`🔍 Проверка ${imageFileIds.length} изображения(ий) перед использованием...`)
+      const { valid, invalid } = await filterValidFiles(imageFileIds)
+      
+      if (invalid.length > 0) {
+        console.warn(`⚠️  Некоторые файлы недоступны в OpenAI и будут исключены:`, invalid)
+        invalid.forEach(({ fileId, reason }) => {
+          console.warn(`  - ${fileId}: ${reason}`)
+        })
+      }
+      
+      if (valid.length === 0) {
+        throw new Error(
+          `Все указанные файлы недоступны в OpenAI.\n` +
+          `Причины:\n${invalid.map(f => `  - ${f.fileId}: ${f.reason}`).join('\n')}\n\n` +
+          `Файлы могли быть удалены из OpenAI. Удалите их из комнаты и загрузите заново.`
+        )
+      }
+      
+      // Используем только валидные файлы
+      imageFileIds = valid
+      console.log(`✅ Использование ${imageFileIds.length} валидных изображения(ий) в сообщении:`, imageFileIds)
+    }
+    
     // Формируем content для сообщения
     // Если есть изображения, используем массив content, иначе просто текст
     let content: string | Array<{ type: string; text?: string; image_file?: { file_id: string } }>
@@ -288,6 +419,7 @@ export async function createMessageAndRun(
           image_file: { file_id: fileId }
         }))
       ]
+      console.log(`📤 Отправка сообщения с ${imageFileIds.length} изображением(ами)`)
     } else {
       // Только текст
       content = message
@@ -309,6 +441,17 @@ export async function createMessageAndRun(
     if (!messageResponse.ok) {
       const errorData = await messageResponse.json().catch(() => ({}))
       const errorMessage = errorData.error?.message || `OpenAI API error: ${messageResponse.status}`
+      
+      // Детальная обработка ошибок для файлов
+      if (errorMessage.includes('file') || errorMessage.includes('download') || errorMessage.includes('Error while downloading')) {
+        console.error(`❌ Ошибка работы с файлом:`, {
+          error: errorMessage,
+          imageFileIds,
+          message: 'Возможно, файл не был правильно загружен в OpenAI или был удален'
+        })
+        throw new Error(`Ошибка работы с файлом: ${errorMessage}. Убедитесь, что файлы загружены в OpenAI с purpose='assistants' и не были удалены.`)
+      }
+      
       throw new Error(`Ошибка добавления сообщения в Thread: ${errorMessage}`)
     }
     
@@ -404,6 +547,14 @@ export async function sendMessageViaAssistant(
     
     if (runStatus.status === 'failed') {
       const errorMsg = runStatus.error?.message || 'Неизвестная ошибка'
+      
+      // Проверяем, связана ли ошибка с файлами
+      if (errorMsg.includes('file') || errorMsg.includes('Failed to fetch') || errorMsg.includes('deleted')) {
+        console.error(`❌ Ошибка работы с файлом в Assistant: ${errorMsg}`)
+        console.error(`⚠️  Возможно, в vector store Assistant есть невалидные файлы.`)
+        console.error(`💡 Рекомендация: удалите Assistant и создайте его заново, чтобы очистить vector store.`)
+      }
+      
       throw new Error(`Assistant завершился с ошибкой: ${errorMsg}`)
     }
     

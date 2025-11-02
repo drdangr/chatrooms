@@ -309,10 +309,83 @@ export default function ChatRoom() {
       if (filesError) {
         console.error('Ошибка загрузки файлов:', filesError)
       } else {
-        setFiles(roomFiles || [])
+        let filesList = roomFiles || []
+        
+        // ДОПОЛНИТЕЛЬНАЯ фильтрация мокап файлов на клиенте (на всякий случай)
+        // Даже если запрос фильтрует их на уровне БД, дополнительная проверка не повредит
+        const beforeFilter = filesList.length
+        filesList = filesList.filter(f => !f.file_url?.startsWith('mock://'))
+        if (beforeFilter !== filesList.length) {
+          console.warn(`⚠️  Отфильтровано ${beforeFilter - filesList.length} мокап файл(ов) на клиенте`)
+        }
+        
+        console.log(`📋 Загружено ${filesList.length} файл(ов) из БД (после фильтрации мокап файлов)`)
+        
+        // Логируем все файлы для диагностики
+        filesList.forEach(f => {
+          console.log(`  - ${f.filename} (${f.file_type}, ${f.file_url?.substring(0, 50)}..., openai_file_id: ${f.openai_file_id || 'нет'})`)
+        })
+        
+        // Проверяем, какие файлы имеют openai_file_id
+        const filesWithOpenAI = filesList.filter(f => f.openai_file_id)
+        console.log(`📋 Из них ${filesWithOpenAI.length} файл(ов) с openai_file_id:`, 
+          filesWithOpenAI.map(f => `${f.filename} (${f.openai_file_id})`))
+        
+        // В фоновом режиме проверяем валидность файлов с openai_file_id
+        if (filesWithOpenAI.length > 0) {
+          // Не блокируем UI, проверяем асинхронно
+          Promise.all(
+            filesWithOpenAI.map(async (file) => {
+              try {
+                const response = await fetch(`https://api.openai.com/v1/files/${file.openai_file_id}`, {
+                  headers: {
+                    'Authorization': `Bearer ${import.meta.env.VITE_OPENAI_API_KEY}`,
+                    'OpenAI-Beta': 'assistants=v2',
+                  },
+                })
+                
+                if (!response.ok) {
+                  console.warn(`⚠️  Файл ${file.filename} (${file.openai_file_id}) удален из OpenAI или недоступен`)
+                  // Очищаем невалидный openai_file_id из БД
+                  try {
+                    await supabase
+                      .from('files')
+                      .update({ openai_file_id: null })
+                      .eq('id', file.id)
+                    console.log(`🧹 Очищен openai_file_id для файла ${file.filename}`)
+                    // Перезагружаем список файлов, чтобы обновить UI
+                    setTimeout(() => loadFiles(), 500)
+                  } catch (updateError) {
+                    console.error('Ошибка очистки openai_file_id:', updateError)
+                  }
+                } else {
+                  const fileInfo = await response.json()
+                  if (fileInfo.purpose !== 'assistants') {
+                    console.warn(`⚠️  Файл ${file.filename} имеет неправильный purpose: ${fileInfo.purpose}`)
+                    // Также очищаем openai_file_id для файлов с неправильным purpose
+                    try {
+                      await supabase
+                        .from('files')
+                        .update({ openai_file_id: null })
+                        .eq('id', file.id)
+                      console.log(`🧹 Очищен openai_file_id для файла ${file.filename} (неправильный purpose)`)
+                      setTimeout(() => loadFiles(), 500)
+                    } catch (updateError) {
+                      console.error('Ошибка очистки openai_file_id:', updateError)
+                    }
+                  }
+                }
+              } catch (error) {
+                console.warn(`⚠️  Не удалось проверить файл ${file.filename}:`, error)
+              }
+            })
+          ).catch(err => console.error('Ошибка при проверке файлов:', err))
+        }
+        
+        setFiles(filesList)
         
         // Гибридный подход: автоматически проверяем наличие файлов для ВСЕХ комнат
-        const hasOpenAIFiles = (roomFiles || []).some(f => f.openai_file_id)
+        const hasOpenAIFiles = filesWithOpenAI.length > 0
         
         if (hasOpenAIFiles) {
           // Проверяем, есть ли уже настроенный Assistant
@@ -558,7 +631,9 @@ export default function ChatRoom() {
           console.log('✅ Assistant автоматически создан')
         } catch (error) {
           console.error('Ошибка автоматического создания Assistant:', error)
-          // Продолжаем с обычным Chat Completions API
+          // Если Assistant не создался - переключаемся на Chat Completions API
+          setUsingAssistantsAPI(false)
+          setAssistantConfig(null)
         }
       }
       
@@ -573,31 +648,182 @@ export default function ChatRoom() {
           // Собираем file IDs изображений для передачи в сообщении
           // Изображения передаются напрямую в сообщении (не через file_search)
           // OpenAI Vision API поддерживает только: PNG, JPEG, GIF, WebP (НЕ SVG)
-          const imageFileIds = files
-            .filter(f => {
-              // Проверяем тип файла
-              const isImage = f.file_type?.startsWith('image/') || 
-                            f.filename.match(/\.(png|jpg|jpeg|gif|webp)$/i)
-              // Исключаем SVG - не поддерживается Vision API
-              const isSvg = f.file_type === 'image/svg+xml' || f.filename.match(/\.svg$/i)
-              // Только файлы с валидным openai_file_id и правильным форматом
-              const hasValidFormat = f.filename.match(/\.(png|jpg|jpeg|gif|webp)$/i) && 
-                                   f.file_type && 
-                                   ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp'].includes(f.file_type)
-              return isImage && !isSvg && f.openai_file_id && hasValidFormat
-            })
-            .map(f => f.openai_file_id!)
+          // ВАЖНО: исключаем мокап файлы - они имеют file_url начинающийся с 'mock://'
+          console.log(`📋 Всего файлов в комнате: ${files.length}`)
+          const allFiles = files.map(f => ({ 
+            filename: f.filename, 
+            file_url: f.file_url, 
+            openai_file_id: f.openai_file_id,
+            is_mock: f.file_url?.startsWith('mock://') 
+          }))
+          console.log('📋 Файлы в комнате:', allFiles)
+          
+          const imageFiles = files.filter(f => {
+            // СТРОГО исключаем мокап файлы - они не должны использоваться
+            if (f.file_url?.startsWith('mock://')) {
+              console.log(`🚫 Исключен мокап файл: ${f.filename} (${f.file_url})`)
+              return false
+            }
+            
+            // Проверяем тип файла
+            const isImage = f.file_type?.startsWith('image/') || 
+                          f.filename.match(/\.(png|jpg|jpeg|gif|webp)$/i)
+            // Исключаем SVG - не поддерживается Vision API
+            const isSvg = f.file_type === 'image/svg+xml' || f.filename.match(/\.svg$/i)
+            // Только файлы с валидным openai_file_id и правильным форматом
+            const hasValidFormat = f.filename.match(/\.(png|jpg|jpeg|gif|webp)$/i) && 
+                                 f.file_type && 
+                                 ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp'].includes(f.file_type)
+            
+            const isValid = isImage && !isSvg && f.openai_file_id && hasValidFormat
+            
+            if (isImage && !isValid) {
+              console.log(`⚠️  Файл ${f.filename} пропущен:`, {
+                isImage,
+                isSvg,
+                hasOpenAIFileId: !!f.openai_file_id,
+                hasValidFormat,
+                file_type: f.file_type
+              })
+            }
+            
+            return isValid
+          })
+          
+          console.log(`🖼️  Отфильтровано ${imageFiles.length} изображений для использования:`)
+          imageFiles.forEach(f => {
+            console.log(`  ✅ ${f.filename} (${f.openai_file_id}, ${f.file_url})`)
+          })
+          
+          // Проверяем наличие openai_file_id для всех найденных изображений
+          const imageFilesWithIds = imageFiles.filter(f => {
+            if (!f.openai_file_id) {
+              console.warn(`⚠️  Изображение "${f.filename}" не имеет openai_file_id и не может быть использовано`)
+              return false
+            }
+            return true
+          })
+          
+          const imageFileIds = imageFilesWithIds.map(f => f.openai_file_id!)
           
           if (imageFileIds.length > 0) {
-            console.log(`🖼️  Attaching ${imageFileIds.length} image(s) to message`)
+            console.log(`🖼️  Найдено ${imageFileIds.length} изображение(й) для прикрепления:`, 
+              imageFilesWithIds.map(f => `${f.filename} (${f.openai_file_id})`))
+          } else if (imageFiles.length > 0) {
+            console.warn(`⚠️  Найдено ${imageFiles.length} изображение(й), но ни у одного нет openai_file_id. Загрузите файлы заново.`)
           }
           
-          const llmResponse = await sendMessageViaAssistant(
-            assistantConfig.assistantId,
-            assistantConfig.threadId,
-            userMessageText,
-            imageFileIds
-          )
+          let llmResponse: string
+          try {
+            llmResponse = await sendMessageViaAssistant(
+              assistantConfig.assistantId,
+              assistantConfig.threadId,
+              userMessageText,
+              imageFileIds
+            )
+          } catch (assistantError) {
+            // Если ошибка связана с файлами в vector store, пересоздаем Assistant с актуальными файлами
+            const errorMsg = (assistantError as Error).message
+            if (errorMsg.includes('Failed to fetch') || errorMsg.includes('file') || errorMsg.includes('deleted')) {
+              console.error('❌ Ошибка работы с файлами в Assistant. Пересоздаем Assistant с актуальными файлами...')
+              try {
+                // Удаляем старый Assistant
+                if (assistantConfig && roomId) {
+                  await deleteAssistant(assistantConfig.assistantId, roomId)
+                }
+                setAssistantConfig(null)
+                
+                // Если есть файлы - создаем новый Assistant с актуальными файлами
+                if (hasOpenAIFiles && currentRoom) {
+                  console.log('🔄 Создание нового Assistant с актуальными файлами...')
+                  
+                  const fileIdsForSearch = files
+                    .filter(f => {
+                      const isImage = f.file_type?.startsWith('image/')
+                      return f.openai_file_id && !isImage && !f.file_url?.startsWith('mock://')
+                    })
+                    .map(f => f.openai_file_id!)
+                  
+                  const config = await getOrCreateAssistantForRoom(
+                    roomId,
+                    currentRoom.system_prompt || 'Вы - полезный ассистент.',
+                    currentRoom.model || 'gpt-4o',
+                    fileIdsForSearch
+                  )
+                  
+                  setAssistantConfig({
+                    assistantId: config.assistantId,
+                    threadId: config.threadId,
+                  })
+                  
+                  // Пытаемся отправить сообщение снова через новый Assistant
+                  console.log('🔄 Повторная отправка сообщения через новый Assistant...')
+                  llmResponse = await sendMessageViaAssistant(
+                    config.assistantId,
+                    config.threadId,
+                    userMessageText,
+                    imageFileIds
+                  )
+                } else {
+                  // Если файлов нет - переключаемся на Chat Completions API
+                  console.log('📤 Нет файлов, переключаемся на Chat Completions API...')
+                  setUsingAssistantsAPI(false)
+                  
+                  const chatResponse = await callOpenAI(
+                    userMessageText,
+                    currentRoom.system_prompt || '',
+                    currentRoom.model || 'gpt-4o',
+                    currentRoom.temperature || 0.7
+                  )
+                  
+                  const { error: llmMessageError } = await supabase
+                    .from('messages')
+                    .insert({
+                      room_id: roomId,
+                      sender_id: null,
+                      sender_name: 'LLM',
+                      text: chatResponse,
+                    })
+
+                  if (llmMessageError) {
+                    console.error('Ошибка сохранения ответа LLM:', llmMessageError)
+                  }
+
+                  return // Выходим, так как уже обработали сообщение через Chat API
+                }
+              } catch (recreateError) {
+                console.error('Ошибка при пересоздании Assistant:', recreateError)
+                // Если не удалось пересоздать - переключаемся на Chat API как fallback
+                console.log('📤 Fallback: переключаемся на Chat Completions API...')
+                setUsingAssistantsAPI(false)
+                setAssistantConfig(null)
+                
+                const chatResponse = await callOpenAI(
+                  userMessageText,
+                  currentRoom.system_prompt || '',
+                  currentRoom.model || 'gpt-4o',
+                  currentRoom.temperature || 0.7
+                )
+                
+                const { error: llmMessageError } = await supabase
+                  .from('messages')
+                  .insert({
+                    room_id: roomId,
+                    sender_id: null,
+                    sender_name: 'LLM',
+                    text: chatResponse,
+                  })
+
+                if (llmMessageError) {
+                  console.error('Ошибка сохранения ответа LLM:', llmMessageError)
+                }
+
+                return
+              }
+            } else {
+              throw assistantError // Выбрасываем ошибку, если она не связана с файлами
+            }
+          }
 
           // Save LLM response
           const { data: llmMessage, error: llmMessageError } = await supabase
@@ -605,7 +831,7 @@ export default function ChatRoom() {
             .insert({
               room_id: roomId,
               sender_id: null,
-              sender_name: 'LLM (Assistants API)',
+              sender_name: 'Assistant LLM',
               text: llmResponse,
             })
             .select()
@@ -1159,7 +1385,7 @@ export default function ChatRoom() {
           ) : (
             messages.map((message) => {
               const isUser = message.sender_id === user?.id
-              const isLLM = message.sender_name === 'LLM'
+              const isLLM = message.sender_name === 'LLM' || message.sender_name === 'Assistant LLM'
               const isSystem = message.sender_name === 'Система'
               const isSelected = selectedMessages.has(message.id)
               
