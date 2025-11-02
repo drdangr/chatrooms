@@ -74,7 +74,7 @@ export default function ChatRoom() {
   const [initializing, setInitializing] = useState(false)
   const [usingAssistantsAPI, setUsingAssistantsAPI] = useState(false)
   const [showFilesModal, setShowFilesModal] = useState(false)
-  const [openMessageMenu, setOpenMessageMenu] = useState<string | null>(null)
+  const [openMessageMenu, setOpenMessageMenu] = useState<{ id: string; placement: 'top' | 'bottom' } | null>(null)
   const [messageActionLoading, setMessageActionLoading] = useState(false)
 
   useEffect(() => {
@@ -1657,19 +1657,34 @@ ${msg.text}`)
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation()
-                          setOpenMessageMenu((prev) => (prev === message.id ? null : message.id))
+                          const buttonRect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                          const viewportHeight = window.innerHeight || document.documentElement.clientHeight
+                          const estimatedMenuHeight = 200
+                          const spaceBelow = viewportHeight - buttonRect.bottom
+                          const placement = spaceBelow < estimatedMenuHeight && buttonRect.top > estimatedMenuHeight ? 'top' : 'bottom'
+
+                          setOpenMessageMenu((prev) => {
+                            if (prev?.id === message.id) {
+                              return null
+                            }
+                            return { id: message.id, placement }
+                          })
                         }}
                         disabled={messageActionLoading || deleting}
-                        className={`p-1 rounded-full transition-colors ${openMessageMenu === message.id ? 'bg-gray-300 text-gray-900' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-200'} disabled:cursor-not-allowed disabled:opacity-50`}
+                        className={`p-1 rounded-full transition-colors ${openMessageMenu?.id === message.id ? 'bg-gray-300 text-gray-900' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-200'} disabled:cursor-not-allowed disabled:opacity-50`}
                         title="Действия"
                       >
                         <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
                           <path d="M10 4a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm0 12a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm0-6a1.5 1.5 0 110-3 1.5 1.5 0 010 3z" />
                         </svg>
                       </button>
-                      {openMessageMenu === message.id && (
+                      {openMessageMenu?.id === message.id && (
                         <div
-                          className={`absolute top-1/2 -translate-y-1/2 w-44 bg-white border border-gray-200 shadow-lg rounded-md py-1 z-30 flex flex-col ${isUser ? 'right-full mr-2' : 'left-full ml-2'}`}
+                          className={`absolute ${
+                            openMessageMenu.placement === 'top' ? 'bottom-full mb-2' : 'top-full mt-2'
+                          } w-48 bg-white border border-gray-200 shadow-lg rounded-md py-1 z-30 flex flex-col ${
+                            isUser ? 'right-full mr-2' : 'left-full ml-2'
+                          }`}
                           onClick={(e) => e.stopPropagation()}
                           onMouseLeave={() => setOpenMessageMenu(null)}
                         >
