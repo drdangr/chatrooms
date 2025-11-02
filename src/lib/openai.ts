@@ -12,6 +12,13 @@ interface ChatCompletionResponse {
   }>
 }
 
+interface ListModelsResponse {
+  data: Array<{
+    id: string
+    object: string
+  }>
+}
+
 /**
  * Проверяет, является ли модель моделью o1/o3 (reasoning model)
  * Модели o1/o3 не поддерживают системные промпты и требуют особого форматирования
@@ -169,6 +176,39 @@ export async function callOpenAI(
     return data.choices[0].message.content.trim()
   } catch (error) {
     console.error('OpenAI API error:', error)
+    throw error
+  }
+}
+
+/**
+ * Получает список моделей, доступных для текущего API ключа
+ */
+export async function listOpenAIModels(): Promise<string[]> {
+  const apiKey = import.meta.env.VITE_OPENAI_API_KEY
+
+  if (!apiKey) {
+    throw new Error('OpenAI API key is not configured')
+  }
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/models', {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+    })
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      const errorMessage = errorData.error?.message || `OpenAI API error: ${response.status} ${response.statusText}`
+      throw new Error(errorMessage)
+    }
+
+    const data: ListModelsResponse = await response.json()
+    return data.data.map((model) => model.id)
+  } catch (error) {
+    console.error('Failed to fetch OpenAI models:', error)
     throw error
   }
 }

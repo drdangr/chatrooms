@@ -1,23 +1,43 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
 import RoleManagement from './RoleManagement'
+import { listOpenAIModels } from '../lib/openai'
 
 interface PromptSettingsProps {
   roomId: string
   onClose: () => void
 }
 
-const AVAILABLE_MODELS = [
-  { value: 'gpt-4o-mini', label: 'GPT-4o Mini (быстрый, дешевый)' },
-  { value: 'gpt-4o', label: 'GPT-4o (баланс)' },
-  { value: 'gpt-4', label: 'GPT-4 (мощный)' },
-  { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo (старый)' },
-  { value: 'gpt-4.5-turbo', label: 'GPT-4.5 Turbo (улучшенный)' },
-  { value: 'gpt-4.5', label: 'GPT-4.5 (новый)' },
-  { value: 'o1', label: 'O1 (reasoning, мощный)' },
-  { value: 'o1-preview', label: 'O1 Preview (reasoning, тестовая)' },
-  { value: 'o1-mini', label: 'O1 Mini (reasoning, быстрый)' },
+interface ModelOption {
+  value: string
+  label: string
+  verified?: boolean
+}
+
+const DEFAULT_MODELS: ModelOption[] = [
+  { value: 'gpt-4o-mini', label: 'GPT-4o Mini (быстрый, дешевый)', verified: true },
+  { value: 'gpt-4o', label: 'GPT-4o (баланс)', verified: true },
+  { value: 'gpt-4', label: 'GPT-4 (мощный)', verified: true },
+  { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo (старый)', verified: true },
+  { value: 'gpt-4.5-turbo', label: 'GPT-4.5 Turbo (нужен доступ)', verified: false },
+  { value: 'gpt-4.5', label: 'GPT-4.5 (нужен доступ)', verified: false },
+  { value: 'o1', label: 'O1 (reasoning, мощный) ✅', verified: true },
 ]
+
+function mergeModelOptions(base: ModelOption[], extra: ModelOption[] = []): ModelOption[] {
+  const map = new Map<string, ModelOption>()
+  base.forEach((option) => {
+    map.set(option.value, option)
+  })
+
+  extra.forEach((option) => {
+    if (!map.has(option.value)) {
+      map.set(option.value, option)
+    }
+  })
+
+  return Array.from(map.values())
+}
 
 export default function PromptSettings({ roomId, onClose }: PromptSettingsProps) {
   const [systemPrompt, setSystemPrompt] = useState('')
@@ -26,6 +46,11 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
   const [saving, setSaving] = useState(false)
   const [activeTab, setActiveTab] = useState<'settings' | 'roles'>('settings')
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
+  const [dynamicModelOptions, setDynamicModelOptions] = useState<ModelOption[]>([])
+  const [apiModels, setApiModels] = useState<string[]>([])
+  const [loadingModels, setLoadingModels] = useState(false)
+  const [modelsError, setModelsError] = useState<string | null>(null)
+  const [customModel, setCustomModel] = useState('')
 
   useEffect(() => {
     loadRoom()
@@ -56,6 +81,71 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (!selectedModel) return
+
+    const isDefault = DEFAULT_MODELS.some((model) => model.value === selectedModel)
+    setDynamicModelOptions((prev) => {
+      if (isDefault || prev.some((model) => model.value === selectedModel)) {
+        return prev
+      }
+
+      return [...prev, { value: selectedModel, label: `${selectedModel} (из БД)`, verified: false }]
+    })
+  }, [selectedModel])
+
+  const combinedModelOptions = useMemo(
+    () => mergeModelOptions(DEFAULT_MODELS, dynamicModelOptions),
+    [dynamicModelOptions]
+  )
+
+  const loadModelsFromApi = async () => {
+    setLoadingModels(true)
+    setModelsError(null)
+
+    try {
+      const models = await listOpenAIModels()
+      const filtered = models.filter((id) =>
+        id.startsWith('gpt-') ||
+        id.startsWith('chatgpt') ||
+        id.startsWith('o1') ||
+        id.startsWith('o3')
+      )
+
+      const newOptions: ModelOption[] = filtered.map((id) => ({
+        value: id,
+        label: `${id} (из API)`
+      }))
+
+      setApiModels(filtered.sort())
+      setDynamicModelOptions((prev) => mergeModelOptions(prev, newOptions))
+    } catch (error) {
+      setModelsError((error as Error).message)
+    } finally {
+      setLoadingModels(false)
+    }
+  }
+
+  const handleApplyCustomModel = () => {
+    const trimmed = customModel.trim()
+    if (!trimmed) return
+
+    setSelectedModel(trimmed)
+    setDynamicModelOptions((prev) => {
+      if (
+        DEFAULT_MODELS.some((model) => model.value === trimmed) ||
+        prev.some((model) => model.value === trimmed)
+      ) {
+        return prev
+      }
+
+      return [...prev, { value: trimmed, label: `${trimmed} (кастом)`, verified: false }]
+    })
+  }
+
+  const isO1ModelSelected = selectedModel?.startsWith('o1') || selectedModel?.startsWith('o3')
+  const isGpt45Selected = selectedModel?.includes('4.5')
 
   const handleSave = async () => {
     if (!roomId) return
@@ -264,40 +354,108 @@ export default function PromptSettings({ roomId, onClose }: PromptSettingsProps)
               onChange={(e) => setSelectedModel(e.target.value)}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              {AVAILABLE_MODELS.map((model) => (
+              {combinedModelOptions.map((model) => (
                 <option key={model.value} value={model.value}>
                   {model.label}
+                  {!model.verified ? ' ⚠️' : ''}
                 </option>
               ))}
             </select>
             <p className="text-xs text-gray-500 mt-1">
               Выберите модель для генерации ответов
             </p>
-            {(selectedModel.startsWith('o1') || selectedModel === 'o1') && (
-              <div className="mt-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-                <p className="text-xs text-yellow-800 font-semibold mb-1">
-                  ⚠️ Особенности моделей O1:
+            {isO1ModelSelected && (
+              <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-lg">
+                <p className="text-xs text-green-800 font-semibold mb-1">
+                  ℹ️ Особенности моделей O1/O3
                 </p>
-                <ul className="text-xs text-yellow-700 space-y-1 list-disc list-inside">
-                  <li>Модели O1 не поддерживают системные промпты напрямую</li>
-                  <li>Системный промпт будет встроен в первое сообщение</li>
-                  <li>Эти модели специализируются на reasoning и могут давать более детальные ответы</li>
-                  <li>Модель может быть недоступна - проверьте доступ к o1 моделям в вашем API ключе</li>
+                <ul className="text-xs text-green-700 space-y-1 list-disc list-inside">
+                  <li>Системный промпт автоматически встраивается в первое пользовательское сообщение</li>
+                  <li>Параметр temperature игнорируется (модель управляет стилем сама)</li>
+                  <li>Убедитесь, что ваш API ключ имеет доступ к reasoning моделям</li>
                 </ul>
               </div>
             )}
-            {(selectedModel.includes('4.5') || selectedModel === 'gpt-4.5' || selectedModel === 'gpt-4.5-turbo') && (
+            {isGpt45Selected && (
               <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                 <p className="text-xs text-blue-800 font-semibold mb-1">
-                  ℹ️ О моделях GPT-4.5:
+                  ℹ️ Особенности моделей GPT-4.5
                 </p>
                 <ul className="text-xs text-blue-700 space-y-1 list-disc list-inside">
-                  <li>Модели GPT-4.5 могут требовать специального доступа через API</li>
-                  <li>Если модель недоступна, используйте GPT-4o как альтернативу</li>
-                  <li>Проверьте актуальность списка моделей в документации OpenAI</li>
+                  <li>Нужен активированный доступ в OpenAI (часто доступно только в тарифах Pro)</li>
+                  <li>Проверьте актуальное имя модели через API (кнопка ниже)</li>
+                  <li>В случае ошибки попробуйте GPT-4o как fallback</li>
                 </ul>
               </div>
             )}
+
+            <div className="mt-4 space-y-3">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <button
+                  type="button"
+                  onClick={loadModelsFromApi}
+                  disabled={loadingModels}
+                  className="px-4 py-2 bg-purple-500 hover:bg-purple-600 text-white rounded-lg transition-colors text-sm font-semibold disabled:bg-gray-400 disabled:cursor-not-allowed"
+                >
+                  {loadingModels ? 'Загрузка моделей...' : 'Загрузить модели из OpenAI'}
+                </button>
+                {modelsError && (
+                  <span className="text-xs text-red-600">
+                    Ошибка загрузки моделей: {modelsError}
+                  </span>
+                )}
+              </div>
+
+              {apiModels.length > 0 && (
+                <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg">
+                  <p className="text-xs text-purple-800 font-semibold mb-2">
+                    Найденные модели (нажмите, чтобы выбрать):
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {apiModels.map((model) => (
+                      <button
+                        key={model}
+                        type="button"
+                        onClick={() => setSelectedModel(model)}
+                        className={`px-2 py-1 text-xs rounded border transition-colors ${
+                          selectedModel === model
+                            ? 'bg-purple-500 text-white border-purple-600'
+                            : 'bg-white text-purple-700 border-purple-300 hover:bg-purple-100'
+                        }`}
+                        title="Использовать эту модель"
+                      >
+                        {model}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1">
+                  Указать своё имя модели
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={customModel}
+                    onChange={(e) => setCustomModel(e.target.value)}
+                    placeholder="Например, gpt-4.5-preview"
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleApplyCustomModel}
+                    className="px-3 py-2 bg-purple-500 hover:bg-purple-600 text-white rounded-lg transition-colors text-sm font-semibold"
+                  >
+                    Применить
+                  </button>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  Если модель недоступна в списке, введите её точное имя вручную
+                </p>
+              </div>
+            </div>
           </div>
 
           {/* System Prompt */}
